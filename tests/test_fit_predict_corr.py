@@ -17,7 +17,8 @@ def test_fit_predict_correlation():
         max_depth=3,
         n_estimators=10,
         learning_rate=0.2,
-        verbosity=False
+        verbosity=False,
+        device='cpu'
     )
 
     model.fit(X, y, era_id=era)

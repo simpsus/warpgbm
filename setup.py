@@ -1,29 +1,36 @@
-from setuptools import setup, find_packages
+import os
+from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
-with open("version.txt", "r") as f:
+def get_extensions():
+    if os.environ.get("SKIP_CUDA_BUILD") == "1":
+        print("Skipping CUDA extension build (SKIP_CUDA_BUILD=1)")
+        return []
+
+    return [
+        CUDAExtension(
+            name="warpgbm.cuda.node_kernel",
+            sources=[
+                "warpgbm/cuda/histogram_kernel.cu",
+                "warpgbm/cuda/best_split_kernel.cu",
+                "warpgbm/cuda/node_kernel.cpp",
+            ]
+        )
+    ]
+
+with open("version.txt") as f:
     version = f.read().strip()
 
 setup(
-    name='warpgbm',
+    name="warpgbm",
     version=version,
-    packages=find_packages(),
-    ext_modules=[
-        CUDAExtension(
-            name='warpgbm.cuda.node_kernel',  # Matches import: from warpgbm.cuda import node_kernel
-            sources=[
-                'warpgbm/cuda/node_kernel.cpp',
-                'warpgbm/cuda/histogram_kernel.cu',
-                'warpgbm/cuda/best_split_kernel.cu'
-            ],
-        ),
-    ],
-    cmdclass={'build_ext': BuildExtension},
+    packages=["warpgbm"],
+    ext_modules=get_extensions(),
+    cmdclass={"build_ext": BuildExtension},
     install_requires=[
-        'torch',
-        'numpy',
-        'scikit-learn',
-        'tqdm',
+        "torch",
+        "numpy",
+        "scikit-learn",
+        "tqdm"
     ],
-    zip_safe=False,
 )
