@@ -53,12 +53,6 @@ preds = model.predict(X)
 
 ---
 
-## License
-
-MIT License
-
----
-
 ## Acknowledgements
 
 WarpGBM builds on the shoulders of PyTorch, scikit-learn, LightGBM, and the CUDA ecosystem. Thanks to all contributors in the GBDT research and engineering space.
