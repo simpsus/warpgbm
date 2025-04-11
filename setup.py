@@ -3,10 +3,6 @@ from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 def get_extensions():
-    if os.environ.get("SKIP_CUDA_BUILD") == "1":
-        print("Skipping CUDA extension build (SKIP_CUDA_BUILD=1)")
-        return []
-
     return [
         CUDAExtension(
             name="warpgbm.cuda.node_kernel",
