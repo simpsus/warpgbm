@@ -22,7 +22,8 @@ jobs:
         sudo apt-key adv --fetch-keys https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/3bf863cc.pub
         echo "deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/ /" | sudo tee /etc/apt/sources.list.d/cuda.list
         sudo apt-get update
-        sudo apt-get install -y cuda-toolkit-11-7
+        sudo apt-get install -y cuda-compiler-11-7 cuda-nvcc-11-7 libcudart-11-7 libcusparse-11-7 libcurand-11-7
+    
 
     - name: Set CUDA environment variable
       run: echo "CUDA_HOME=/usr/local/cuda-11.7" >> $GITHUB_ENV
