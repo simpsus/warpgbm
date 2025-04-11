@@ -48,7 +48,9 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         self.compute_histogram = histogram_kernels[histogram_computer]
 
 
-    def fit(self, X, y, era_id):
+    def fit(self, X, y, era_id=None):
+        if era_id == None:
+            era_id = np.ones(X.shape[0], dtype='int32')
         self.bin_indices, era_indices, self.bin_edges, self.unique_eras, self.Y_gpu = self.preprocess_gpu_data(X, y, era_id)
         self.num_samples, self.num_features = X.shape
         self.gradients = torch.zeros_like(self.Y_gpu)
