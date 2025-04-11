@@ -17,10 +17,11 @@ jobs:
       with:
         python-version: "3.10"
 
-    - name: Install CUDA 12.8.1
-      uses: Jimver/cuda-toolkit@v0.2.11
+    - name: Install CUDA
+      uses: Jimver/cuda-toolkit@v0.2.22
+      id: cuda-toolit
       with:
-        cuda: "12.8.1"
+        cuda: "12.5.0"
       
 
     - name: Install dependencies
