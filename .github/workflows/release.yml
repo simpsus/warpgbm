@@ -7,63 +7,48 @@ on:
 jobs:
   test-and-deploy:
     runs-on: ubuntu-latest
+    container:
+      image: nvidia/cuda:12.1.1-devel-ubuntu22.04
 
     steps:
-    - name: Checkout repo
-      uses: actions/checkout@v4
+      - name: Install system and Python dependencies
+        run: |
+          apt-get update && apt-get install -y \
+            python3-pip python3-dev git build-essential \
+            && ln -s /usr/bin/python3 /usr/bin/python
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: "3.10"
+          pip install --upgrade pip
+          pip install torch numpy scikit-learn tqdm pytest build twine
 
-    - name: Install CUDA
-      uses: Jimver/cuda-toolkit@v0.2.22
-      id: cuda-toolit
-      with:
-        cuda: "12.5.0"
-      
-    - name: Free up disk space
-      run: |
-        echo "Before cleanup:"
-        df -h
-    
-        # Remove unnecessary software to free up space
-        sudo rm -rf /usr/share/dotnet
-        sudo rm -rf /opt/ghc
-        sudo rm -rf /opt/hostedtoolcache/go
-        sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-    
-        echo "After cleanup:"
-        df -h
-      
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-    - name: Install dependencies
-      run: |
-        pip install .[dev]
-        pip install pytest build twine
+      - name: Install warpgbm
+        run: |
+          pip install .
 
-    - name: Run tests
-      run: pytest tests/
+      - name: Run tests
+        run: |
+          pytest tests/
 
-    - name: Build wheel and source distribution
-      run: python -m build
+      - name: Build wheel and sdist
+        run: python -m build
 
-    - name: Upload to TestPyPI if version changed
-      env:
-        TWINE_USERNAME: __token__
-        TWINE_PASSWORD: ${{ secrets.TEST_PYPI_API_TOKEN }}
-      run: |
-        VERSION=$(cat version.txt)
-        echo "Current version: $VERSION"
+      - name: Upload to TestPyPI if version changed
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.TEST_PYPI_API_TOKEN }}
+        run: |
+          VERSION=$(cat version.txt)
+          echo "Version: $VERSION"
 
-        if git tag | grep -q "^v$VERSION-test$"; then
-          echo "Version $VERSION-test already tagged — skipping upload."
-        else
-          echo "Uploading version $VERSION to TestPyPI..."
-          twine upload --repository-url https://test.pypi.org/legacy/ dist/*
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-          git tag v$VERSION-test
-          git push origin v$VERSION-test
-        fi
+          if git tag | grep -q "^v$VERSION-test$"; then
+            echo "Version $VERSION-test already tagged — skipping upload."
+          else
+            echo "Uploading to TestPyPI..."
+            twine upload --repository-url https://test.pypi.org/legacy/ dist/*
+            git config user.name "github-actions"
+            git config user.email "github-actions@github.com"
+            git tag v$VERSION-test
+            git push origin v$VERSION-test
+          fi
