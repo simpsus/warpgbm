@@ -23,6 +23,20 @@ jobs:
       with:
         cuda: "12.5.0"
       
+    - name: Free up disk space
+      run: |
+        echo "Before cleanup:"
+        df -h
+    
+        # Remove unnecessary software to free up space
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /opt/hostedtoolcache/go
+        sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+    
+        echo "After cleanup:"
+        df -h
+      
 
     - name: Install dependencies
       run: |
