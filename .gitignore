@@ -1,0 +1,61 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# CUDA and C++ build artifacts
+*.o
+*.so
+*.dSYM/
+*.out
+*.ptx
+
+# PyTorch extension build
+build/
+dist/
+*.egg-info/
+*.egg
+*.pyd
+*.cpp.o
+*.cu.o
+*.cpp.gch
+
+# CMake files (if you ever use it)
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Jupyter and notebooks
+.ipynb_checkpoints/
+
+# PyCharm / VSCode project files
+.idea/
+.vscode/
+
+# Testing artifacts
+.coverage
+.tox/
+.nox/
+pytest_cache/
+
+# Python virtual environments
+.env
+.venv
+env/
+venv/
+
+# System / OS files
+.DS_Store
+Thumbs.db
+
+# Build logs
+*.log
+
+# Packaging metadata
+pip-wheel-metadata/
+
+# Version control backups
+*.swp
+*~
+
