@@ -18,13 +18,15 @@ jobs:
             && ln -s /usr/bin/python3 /usr/bin/python
 
           pip install --upgrade pip
-          pip install torch numpy scikit-learn tqdm pytest build twine
+          pip install ninja torch numpy scikit-learn tqdm pytest build twine
 
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Install warpgbm
+      - name: Install warpgbm with CUDA arch flags
         run: |
+          # Covers: V100 (7.0), T4 (7.5), A100 (8.0), RTX 30xx (8.6), L4 (8.9), H100 (9.0)
+          export TORCH_CUDA_ARCH_LIST="7.0;7.5;8.0;8.6;8.9;9.0"
           pip install .
 
       - name: Run tests
