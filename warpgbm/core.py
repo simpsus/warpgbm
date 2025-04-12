@@ -1,7 +1,8 @@
 import torch
 import numpy as np
 from sklearn.base import BaseEstimator, RegressorMixin
-from warpgbm.cuda import node_kernel
+import importlib
+node_kernel = importlib.import_module("warpgbm.cuda.node_kernel")
 from tqdm import tqdm
 
 histogram_kernels = {
