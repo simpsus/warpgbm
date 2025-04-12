@@ -6,7 +6,8 @@ from tqdm import tqdm
 
 histogram_kernels = {
     'hist1': node_kernel.compute_histogram,
-    'hist2': node_kernel.compute_histogram2
+    'hist2': node_kernel.compute_histogram2,
+    'hist3': node_kernel.compute_histogram3
 }
 
 class WarpGBM(BaseEstimator, RegressorMixin):
@@ -19,7 +20,9 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         min_child_weight=20,
         min_split_gain=0.0,
         verbosity=True,
-        histogram_computer='hist1'
+        histogram_computer='hist1',
+        threads_per_block=256,
+        rows_per_thread=1
     ):
         self.num_bins = num_bins
         self.max_depth = max_depth
@@ -46,10 +49,12 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         self.best_feature = torch.tensor([-1], dtype=torch.int32, device=self.device)
         self.best_bin = torch.tensor([-1], dtype=torch.int32, device=self.device)
         self.compute_histogram = histogram_kernels[histogram_computer]
+        self.threads_per_block = threads_per_block
+        self.rows_per_thread = rows_per_thread
 
 
     def fit(self, X, y, era_id=None):
-        if era_id == None:
+        if era_id is None:
             era_id = np.ones(X.shape[0], dtype='int32')
         self.bin_indices, era_indices, self.bin_edges, self.unique_eras, self.Y_gpu = self.preprocess_gpu_data(X, y, era_id)
         self.num_samples, self.num_features = X.shape
@@ -106,7 +111,9 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             gradients,
             grad_hist,
             hess_hist,
-            self.num_bins
+            self.num_bins,
+            self.threads_per_block,
+            self.rows_per_thread
         )
         return grad_hist, hess_hist
 

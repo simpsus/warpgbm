@@ -78,8 +78,9 @@ void launch_histogram_kernel_cuda(
     const at::Tensor &gradients,   // [N] float tensor
     at::Tensor &grad_hist,         // [F * B] float tensor (preallocated)
     at::Tensor &hess_hist,         // [F * B] float tensor (preallocated)
-    int num_bins                   // B (number of bins)
-)
+    int num_bins,
+    int threads_per_block = 256,
+    int rows_per_thread = 1)
 {
     int64_t N = bin_indices.size(0);
     int64_t F = bin_indices.size(1);
@@ -87,7 +88,6 @@ void launch_histogram_kernel_cuda(
 
     // Define grid and block dimensions.
     // blockDim.x: number of threads per block (for processing samples).
-    int threads_per_block = 256;
     // gridDim.x: number of feature tiles.
     int grid_x = (F + F_TILE - 1) / F_TILE;
     // gridDim.y: number of sample chunks.
@@ -144,7 +144,9 @@ void launch_histogram_kernel_cuda_2(
     const at::Tensor &gradients,   // float32 [N]
     at::Tensor &grad_hist,         // float32 [F * B]
     at::Tensor &hess_hist,         // float32 [F * B]
-    int num_bins)
+    int num_bins,
+    int threads_per_block = 256,
+    int rows_per_thread = 1)
 {
     CHECK_INPUT(bin_indices);
     CHECK_INPUT(gradients);
@@ -153,7 +155,7 @@ void launch_histogram_kernel_cuda_2(
 
     int64_t N = bin_indices.size(0);
     int64_t F = bin_indices.size(1);
-    int64_t tile_size = 256;
+    int64_t tile_size = threads_per_block;
     int64_t feature_tiles = (F + tile_size - 1) / tile_size;
     int64_t total_blocks = N * feature_tiles;
 
@@ -167,6 +169,93 @@ void launch_histogram_kernel_cuda_2(
         F, num_bins, tile_size);
 
     // Optional: check for kernel launch failure
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess)
+    {
+        printf("CUDA kernel launch failed: %s\n", cudaGetErrorString(err));
+    }
+}
+
+__global__ void histogram_tiled_configurable_kernel(
+    const int8_t *__restrict__ bin_indices, // [N, F]
+    const float *__restrict__ gradients,    // [N]
+    float *__restrict__ grad_hist,          // [F * B]
+    float *__restrict__ hess_hist,          // [F * B]
+    int64_t N, int64_t F, int64_t B,
+    int rows_per_thread)
+{
+    int feat = blockIdx.x; // 1 block per feature
+    int row_start = (blockIdx.y * blockDim.x + threadIdx.x) * rows_per_thread;
+
+    extern __shared__ float shmem[];
+    float *sh_grad = shmem;       // [B]
+    float *sh_hess = &sh_grad[B]; // [B]
+
+    // Initialize shared memory histograms
+    for (int b = threadIdx.x; b < B; b += blockDim.x)
+    {
+        sh_grad[b] = 0.0f;
+        sh_hess[b] = 0.0f;
+    }
+    __syncthreads();
+
+    // Each thread processes multiple rows
+    for (int r = 0; r < rows_per_thread; ++r)
+    {
+        int row = row_start + r;
+        if (row < N)
+        {
+            int8_t bin = bin_indices[row * F + feat];
+            if (bin >= 0 && bin < B)
+            {
+                atomicAdd(&sh_grad[bin], gradients[row]);
+                atomicAdd(&sh_hess[bin], 1.0f);
+            }
+        }
+    }
+    __syncthreads();
+
+    // One thread per bin writes results back to global memory
+    for (int b = threadIdx.x; b < B; b += blockDim.x)
+    {
+        int64_t idx = feat * B + b;
+        atomicAdd(&grad_hist[idx], sh_grad[b]);
+        atomicAdd(&hess_hist[idx], sh_hess[b]);
+    }
+}
+
+void launch_histogram_kernel_cuda_configurable(
+    const at::Tensor &bin_indices,
+    const at::Tensor &gradients,
+    at::Tensor &grad_hist,
+    at::Tensor &hess_hist,
+    int num_bins,
+    int threads_per_block = 256,
+    int rows_per_thread = 1)
+{
+    CHECK_INPUT(bin_indices);
+    CHECK_INPUT(gradients);
+    CHECK_INPUT(grad_hist);
+    CHECK_INPUT(hess_hist);
+
+    int64_t N = bin_indices.size(0);
+    int64_t F = bin_indices.size(1);
+
+    int rows_per_block = threads_per_block * rows_per_thread;
+    int row_tiles = (N + rows_per_block - 1) / rows_per_block;
+
+    dim3 blocks(F, row_tiles); // grid.x = F, grid.y = row_tiles
+    dim3 threads(threads_per_block);
+    int shared_mem_bytes = 2 * num_bins * sizeof(float);
+
+    histogram_tiled_configurable_kernel<<<blocks, threads, shared_mem_bytes>>>(
+        bin_indices.data_ptr<int8_t>(),
+        gradients.data_ptr<float>(),
+        grad_hist.data_ptr<float>(),
+        hess_hist.data_ptr<float>(),
+        N, F, num_bins,
+        rows_per_thread);
+
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess)
     {

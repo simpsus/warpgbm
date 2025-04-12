@@ -8,40 +8,31 @@ jobs:
   test-and-deploy:
     runs-on: ubuntu-latest
     container:
-      image: nvidia/cuda:12.3.2-cudnn8-devel-ubuntu22.04
-      options: --runtime=nvidia
-
-    env:
-      CUDA_HOME: /usr/local/cuda
-      LD_LIBRARY_PATH: /usr/local/cuda/lib64
-      DEBIAN_FRONTEND: noninteractive
+      image: nvidia/cuda:12.1.1-devel-ubuntu22.04
 
     steps:
+      - name: Install system and Python dependencies
+        run: |
+          apt-get update && apt-get install -y \
+            python3-pip python3-dev git build-essential \
+            && ln -s /usr/bin/python3 /usr/bin/python
+
+          pip install --upgrade pip
+          pip install torch numpy scikit-learn tqdm pytest build twine
+
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Install system deps
+      - name: Install warpgbm
         run: |
-          apt-get update
-          apt-get install -y python3 python3-pip python3-dev git ninja-build
-
-      - name: Install Python packages
-        run: |
-          python3 -m pip install --upgrade pip
-          pip install .[dev]
-          pip install pytest build twine
-
-      - name: Check CUDA setup
-        run: |
-          echo "CUDA_HOME: $CUDA_HOME"
-          ls -lh $CUDA_HOME/lib64/libcudart.so*
-          python3 -c "import torch; print('Torch CUDA available:', torch.cuda.is_available())"
+          pip install .
 
       - name: Run tests
-        run: pytest tests/
+        run: |
+          pytest tests/
 
-      - name: Build wheel and source distribution
-        run: python3 -m build
+      - name: Build wheel and sdist
+        run: python -m build
 
       - name: Upload to TestPyPI if version changed
         env:
@@ -49,12 +40,12 @@ jobs:
           TWINE_PASSWORD: ${{ secrets.TEST_PYPI_API_TOKEN }}
         run: |
           VERSION=$(cat version.txt)
-          echo "Current version: $VERSION"
+          echo "Version: $VERSION"
 
           if git tag | grep -q "^v$VERSION-test$"; then
             echo "Version $VERSION-test already tagged — skipping upload."
           else
-            echo "Uploading version $VERSION to TestPyPI..."
+            echo "Uploading to TestPyPI..."
             twine upload --repository-url https://test.pypi.org/legacy/ dist/*
             git config user.name "github-actions"
             git config user.email "github-actions@github.com"
