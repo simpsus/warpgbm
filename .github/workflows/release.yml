@@ -23,11 +23,16 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Install warpgbm with CUDA arch flags
+      - name: Install warpgbm in editable mode with CUDA arch flags
         run: |
           # Covers: V100 (7.0), T4 (7.5), A100 (8.0), RTX 30xx (8.6), L4 (8.9), H100 (9.0)
           export TORCH_CUDA_ARCH_LIST="7.0;7.5;8.0;8.6;8.9;9.0"
-          pip install .
+          pip install --no-build-isolation -e .
+
+      - name: Confirm .so file exists
+        run: |
+          echo "Checking for compiled extensions..."
+          find . -name "*.so" || echo "No .so found!"
 
       - name: Run tests
         run: |
