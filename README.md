@@ -12,7 +12,6 @@ WarpGBM is a high-performance, GPU-accelerated Gradient Boosted Decision Tree (G
 - GPU-accelerated training and histogram construction using custom CUDA kernels
 - Drop-in scikit-learn style interface
 - Supports pre-binned data or automatic quantile binning
-- Fully differentiable prediction path
 - Simple install with `pip`
 
 ---
@@ -135,6 +134,23 @@ wgbm_preds = wgbm_model.predict(X_np)
 print(f"LightGBM:   corr = {np.corrcoef(lgb_preds, Y_np)[0,1]:.4f}, time = {lgb_time:.2f}s")
 print(f"WarpGBM:     corr = {np.corrcoef(wgbm_preds, Y_np)[0,1]:.4f}, time = {wgbm_time:.2f}s")
 ```
+
+**Results (Google Colab Pro, A100 GPU):**
+
+```
+LightGBM:   corr = 0.0703, time = 643.88s
+WarpGBM:     corr = 0.0660, time = 49.16s
+```
+
+---
+
+### Run it live in Colab
+
+You can try WarpGBM in a live Colab notebook using real pre-binned Numerai tournament data:
+
+[Open in Colab](https://colab.research.google.com/drive/10mKSjs9UvmMgM5_lOXAylq5LUQAnNSi7?usp=sharing)
+
+No installation required — just press **"Open in Playground"**, then **Run All**!
 
 ---
 
