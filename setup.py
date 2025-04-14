@@ -1,6 +1,17 @@
 import os
+import sys
 from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
+import torch
+
+# Check CUDA availability
+if not torch.cuda.is_available():
+    print("CUDA is not available. Please ensure you have a compatible GPU and CUDA setup.")
+    sys.exit(1)
+
+# Get the CUDA version from PyTorch
+cuda_version = torch.version.cuda
+print(f"Building with CUDA version: {cuda_version}")
 
 def get_extensions():
     return [
