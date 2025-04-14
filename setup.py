@@ -1,11 +1,21 @@
 import os
 from setuptools import setup, find_packages
-from torch.utils.cpp_extension import BuildExtension, CUDAExtension, CUDA_HOME
+from setuptools.command.build_ext import build_ext as build_ext_orig
+
+# Try importing torch and checking CUDA support
+try:
+    import torch
+    from torch.utils.cpp_extension import CUDAExtension, BuildExtension, CUDA_HOME
+    torch_available = True
+    has_cuda = torch.version.cuda is not None and CUDA_HOME is not None
+except ImportError:
+    torch_available = False
+    has_cuda = False
 
 def get_extensions():
     extensions = []
-
-    if CUDA_HOME is not None:
+    if has_cuda:
+        print(f"Building with CUDA (found at {CUDA_HOME})")
         extensions.append(
             CUDAExtension(
                 name="warpgbm.cuda.node_kernel",
@@ -17,11 +27,13 @@ def get_extensions():
             )
         )
     else:
-        print("CUDA_HOME not found. Skipping CUDA extensions.")
-
+        if torch_available:
+            print("PyTorch installed but CUDA not available. Skipping CUDA extensions.")
+        else:
+            print("PyTorch not found. Skipping CUDA extensions.")
     return extensions
 
-# Get version
+# Read version
 with open("version.txt") as f:
     version = f.read().strip()
 
@@ -30,7 +42,7 @@ setup(
     version=version,
     packages=find_packages(),
     ext_modules=get_extensions(),
-    cmdclass={"build_ext": BuildExtension} if CUDA_HOME is not None else {},
+    cmdclass={"build_ext": BuildExtension} if torch_available else {},
     install_requires=[
         "torch",
         "numpy",
