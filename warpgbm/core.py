@@ -20,9 +20,10 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         min_child_weight=20,
         min_split_gain=0.0,
         verbosity=True,
-        histogram_computer='hist1',
-        threads_per_block=256,
-        rows_per_thread=1,
+        histogram_computer='hist3',
+        threads_per_block=64,
+        rows_per_thread=4,
+        L2_reg = 1e-6,
         device = 'cuda'
     ):
         self.num_bins = num_bins
@@ -52,6 +53,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         self.compute_histogram = histogram_kernels[histogram_computer]
         self.threads_per_block = threads_per_block
         self.rows_per_thread = rows_per_thread
+        self.L2_reg = L2_reg
 
 
     def fit(self, X, y, era_id=None):
@@ -124,9 +126,9 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             hessian_histogram.contiguous(),
             self.num_features,
             self.num_bins,
-            0.0,  # L2 reg
-            1.0,  # L1 reg
-            1e-6, # hess cap
+            self.min_split_gain,
+            self.min_child_weight,
+            self.L2_reg,
             self.out_feature,
             self.out_bin
         )
