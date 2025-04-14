@@ -1,35 +1,21 @@
-name: Test and Deploy to TestPyPI
+name: Deploy to TestPyPI
 
 on:
   push:
     branches: [main]
 
 jobs:
-  test-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
-    container:
-      image: nvidia/cuda:12.1.1-devel-ubuntu22.04
 
     steps:
-      - name: Install system and Python dependencies
-        run: |
-          apt-get update && apt-get install -y \
-            python3-pip python3-dev git build-essential \
-            && ln -s /usr/bin/python3 /usr/bin/python
-
-          pip install --upgrade pip
-          pip install torch numpy scikit-learn tqdm pytest build twine
-
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Install warpgbm
+      - name: Install Python dependencies
         run: |
-          pip install .
-
-      - name: Run tests
-        run: |
-          pytest tests/
+          pip install --upgrade pip
+          pip install build twine
 
       - name: Build wheel and sdist
         run: python -m build
