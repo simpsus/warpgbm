@@ -1,3 +1,17 @@
 [build-system]
 requires = ["setuptools", "wheel", "torch", "numpy"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "warpgbm"
+version = "0.1.13"
+description = "A fast GPU-accelerated Gradient Boosted Decision Tree library with PyTorch + CUDA"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { file = "LICENSE" }
+dependencies = [
+    "torch",
+    "numpy",
+    "tqdm",
+    "scikit-learn"
+]
