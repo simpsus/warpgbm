@@ -1,6 +1,6 @@
 import os
 import sys
-from setuptools import setup
+from setuptools import setup, find_packages
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 import torch
 
@@ -31,7 +31,7 @@ with open("version.txt") as f:
 setup(
     name="warpgbm",
     version=version,
-    packages=["warpgbm"],
+    packages=find_packages(),  #auto-includes warpgbm.cuda
     ext_modules=get_extensions(),
     cmdclass={"build_ext": BuildExtension},
     install_requires=[

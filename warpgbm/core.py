@@ -22,7 +22,8 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         verbosity=True,
         histogram_computer='hist1',
         threads_per_block=256,
-        rows_per_thread=1
+        rows_per_thread=1,
+        device = 'cuda'
     ):
         self.num_bins = num_bins
         self.max_depth = max_depth
@@ -32,7 +33,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         self.bin_edges = None  # shape: [num_features, num_bins-1] if using quantile binning
         self.base_prediction = None
         self.unique_eras = None
-        self.device = "cuda"
+        self.device = device
         self.root_gradient_histogram = None
         self.root_hessian_histogram = None
         self.gradients = None
