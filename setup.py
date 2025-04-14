@@ -1,43 +1,40 @@
 import os
-import sys
 from setuptools import setup, find_packages
-from torch.utils.cpp_extension import BuildExtension, CUDAExtension
-import torch
-
-# Check CUDA availability
-if not torch.cuda.is_available():
-    print("CUDA is not available. Please ensure you have a compatible GPU and CUDA setup.")
-    sys.exit(1)
-
-# Get the CUDA version from PyTorch
-cuda_version = torch.version.cuda
-print(f"Building with CUDA version: {cuda_version}")
+from torch.utils.cpp_extension import BuildExtension, CUDAExtension, CUDA_HOME
 
 def get_extensions():
-    return [
-        CUDAExtension(
-            name="warpgbm.cuda.node_kernel",
-            sources=[
-                "warpgbm/cuda/histogram_kernel.cu",
-                "warpgbm/cuda/best_split_kernel.cu",
-                "warpgbm/cuda/node_kernel.cpp",
-            ]
-        )
-    ]
+    extensions = []
 
+    if CUDA_HOME is not None:
+        extensions.append(
+            CUDAExtension(
+                name="warpgbm.cuda.node_kernel",
+                sources=[
+                    "warpgbm/cuda/histogram_kernel.cu",
+                    "warpgbm/cuda/best_split_kernel.cu",
+                    "warpgbm/cuda/node_kernel.cpp",
+                ]
+            )
+        )
+    else:
+        print("CUDA_HOME not found. Skipping CUDA extensions.")
+
+    return extensions
+
+# Get version
 with open("version.txt") as f:
     version = f.read().strip()
 
 setup(
     name="warpgbm",
     version=version,
-    packages=find_packages(),  #auto-includes warpgbm.cuda
+    packages=find_packages(),
     ext_modules=get_extensions(),
-    cmdclass={"build_ext": BuildExtension},
+    cmdclass={"build_ext": BuildExtension} if CUDA_HOME is not None else {},
     install_requires=[
         "torch",
         "numpy",
         "scikit-learn",
-        "tqdm"
+        "tqdm",
     ],
 )
