@@ -25,7 +25,7 @@ In our initial tests on an NVIDIA 3090 (local) and A100 (Google Colab Pro), Warp
 
 ## Installation
 
-### 🔧 Recommended (GitHub, always latest):
+### Recommended (GitHub, always latest):
 
 ```bash
 pip install git+https://github.com/jefferythewind/warpgbm.git
@@ -33,7 +33,7 @@ pip install git+https://github.com/jefferythewind/warpgbm.git
 
 This installs the latest version directly from GitHub and compiles CUDA extensions on your machine using your **local PyTorch and CUDA setup**. It's the most reliable method for ensuring compatibility and staying up to date with the latest features.
 
-### 📦 Alternatively (PyPI, stable releases):
+### Alternatively (PyPI, stable releases):
 
 ```bash
 pip install warpgbm
@@ -41,7 +41,7 @@ pip install warpgbm
 
 This installs from PyPI and also compiles CUDA code locally during installation. This method works well **if your environment already has PyTorch with GPU support** installed and configured.
 
-> 💡 **Tip:**\
+> **Tip:**\
 > If you encounter an error related to mismatched or missing CUDA versions, try installing with the following flag:
 >
 > ```bash
@@ -49,7 +49,7 @@ This installs from PyPI and also compiles CUDA code locally during installation.
 > ```
 
 Before either method, make sure you’ve installed PyTorch with GPU support:\
-👉 [https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/)
+[https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/)
 
 ---
 
@@ -86,7 +86,7 @@ print(f"LightGBM:   corr = {np.corrcoef(lgb_preds, y)[0,1]:.4f}, time = {lgb_tim
 print(f"WarpGBM:     corr = {np.corrcoef(wgbm_preds, y)[0,1]:.4f}, time = {wgbm_time:.2f}s")
 ```
 
-**🧪 Results (Ryzen 9 CPU, NVIDIA 3090 GPU):**
+**Results (Ryzen 9 CPU, NVIDIA 3090 GPU):**
 
 ```
 LightGBM:   corr = 0.8742, time = 37.33s
