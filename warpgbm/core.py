@@ -202,7 +202,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         print("Finished training forest.")
         return forest
 
-    def predict(self, X_np, era_id_np=None, chunk_size=50000):
+    def predict(self, X_np, chunk_size=50000):
         """
         Vectorized predict using a padded layer-by-layer approach.
         We assume `flatten_forest_to_tensors` has produced self.flat_forest with
@@ -366,7 +366,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             "max_nodes": max_nodes
         }
 
-    def predict_numpy(self, X_np, era_id_np=None, chunk_size=50000):
+    def predict_numpy(self, X_np, chunk_size=50000):
         """
         Fully NumPy-based version of predict_fast.
         Assumes flatten_forest_to_tensors has been called and `self.flat_forest` is ready.

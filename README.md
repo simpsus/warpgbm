@@ -163,18 +163,15 @@ No installation required — just press **"Open in Playground"**, then **Run All
 - `n_estimators`: Number of boosting iterations (default: 100)
 - `min_child_weight`: Minimum sum of instance weight needed in a child (default: 20)
 - `min_split_gain`: Minimum loss reduction required to make a further partition (default: 0.0)
-- `verbosity`: Whether to print training logs (default: True)
 - `histogram_computer`: Choice of histogram kernel (`'hist1'`, `'hist2'`, `'hist3'`) (default: `'hist3'`)
 - `threads_per_block`: CUDA threads per block (default: 32)
 - `rows_per_thread`: Number of training rows processed per thread (default: 4)
-- `device`: Device to train on (`'cuda'` or `'cpu'`, default: `'cuda'`)
-- `split_type`: Algorithm used to choose best split (`'v1'` = CUDA kernel, `'v2'` = torch-based) (default: `'v2'`)
+- `L2_reg`: L2 regularizer (default: 1e-6)
 
 ### Methods:
 - `.fit(X, y, era_id=None)`: Train the model. `X` can be raw floats or pre-binned `int8` data. `era_id` is optional and used internally.
-- `.predict(X)`: Predict on new raw float or pre-binned data.
-- `.predict_data(bin_indices)`: Predict from binned data directly (NumPy `int8` matrix).
-- `.grow_forest()`: Manually triggers tree construction loop (usually not needed).
+- `.predict(X, chunksize=50_000)`: Predict on new raw float or pre-binned data.
+- `.predict_numpy(X, chunksize=50_000)`: Same as `.predict(X)` but without using the GPU. 
 
 ---
 
