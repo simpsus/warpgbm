@@ -47,6 +47,17 @@ This installs from PyPI and also compiles CUDA code locally during installation.
 > pip install warpgbm --no-build-isolation
 > ```
 
+### Windows
+
+Thank you, ShatteredX, for providing working instructions for a Windows installation.
+
+```
+git clone https://github.com/jefferythewind/warpgbm.git
+cd warpgbm
+python setup.py bdist_wheel
+pip install .\dist\warpgbm-0.1.15-cp310-cp310-win_amd64.whl
+```
+
 Before either method, make sure you’ve installed PyTorch with GPU support:\
 [https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/)
 
