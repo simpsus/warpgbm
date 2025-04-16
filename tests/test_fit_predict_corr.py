@@ -1,14 +1,12 @@
 import numpy as np
 from warpgbm import WarpGBM
+from sklearn.datasets import make_regression
 
 def test_fit_predict_correlation():
     np.random.seed(42)
-    N = 500
-    F = 5
-    X = np.random.randn(N, F).astype(np.float32)
-    true_weights = np.array([0.5, -1.0, 2.0, 0.0, 1.0])
-    noise = 0.1 * np.random.randn(N)
-    y = (X @ true_weights + noise).astype(np.float32)
+    N = 1_000_000
+    F = 100
+    X, y = make_regression(n_samples=N, n_features=F, noise=0.1, random_state=42)
     era = np.zeros(N, dtype=np.int32)
     corrs = []
 

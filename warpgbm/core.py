@@ -3,12 +3,48 @@ import numpy as np
 from sklearn.base import BaseEstimator, RegressorMixin
 from warpgbm.cuda import node_kernel
 from tqdm import tqdm
+from typing import Tuple
+from torch import Tensor
 
 histogram_kernels = {
     'hist1': node_kernel.compute_histogram,
     'hist2': node_kernel.compute_histogram2,
     'hist3': node_kernel.compute_histogram3
 }
+
+@torch.jit.script
+def jit_find_best_split(
+    G: Tensor, H: Tensor, 
+    lambda_l2: float, 
+    lambda_l1: float,  # unused placeholder for now
+    min_split_gain: float, 
+    min_child_weight: float
+) -> Tuple[int, int]:
+    F, B = G.size()
+    Bm1 = B - 1
+    eps = 0
+
+    GH = torch.stack([G, H], dim=0).cumsum(dim=2)  # [2, F, B]
+    GL, HL_raw = GH[0, :, :-1], GH[1, :, :-1]      # [F, B-1]
+    GP, HP = GH[0, :, -1:], GH[1, :, -1:]          # [F, 1]
+    H_R_raw = HP - HL_raw
+
+    # Validity mask using raw child hessians
+    valid = (HL_raw >= min_child_weight) & (H_R_raw >= min_child_weight)
+
+    # Closed-form gain
+    HL, HP = HL_raw + lambda_l2, HP + lambda_l2
+    num = (HP * GL - HL * GP).pow(2)
+    denom = HP * HL * (HP - HL) + eps
+    gain = torch.where(valid & (num / denom >= min_split_gain), num / denom, torch.full_like(num, -float("inf")))
+
+    gain_flat = gain.view(-1)
+    best_idx = torch.argmax(gain_flat)
+
+    if gain_flat[best_idx].item() == float('-inf'):
+        return -1, -1
+
+    return best_idx // Bm1, best_idx % Bm1
 
 class WarpGBM(BaseEstimator, RegressorMixin):
     def __init__(
@@ -24,6 +60,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         threads_per_block=64,
         rows_per_thread=4,
         L2_reg = 1e-6,
+        L1_reg = 0.0,
         device = 'cuda'
     ):
         self.num_bins = num_bins
@@ -54,7 +91,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         self.threads_per_block = threads_per_block
         self.rows_per_thread = rows_per_thread
         self.L2_reg = L2_reg
-
+        self.L1_reg = L1_reg
 
     def fit(self, X, y, era_id=None):
         if era_id is None:
@@ -121,20 +158,14 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         return grad_hist, hess_hist
 
     def find_best_split(self, gradient_histogram, hessian_histogram):
-        node_kernel.compute_split(
-            gradient_histogram.contiguous(),
-            hessian_histogram.contiguous(),
-            self.num_features,
-            self.num_bins,
+        f,b = jit_find_best_split(
+            gradient_histogram,
+            hessian_histogram,
+            self.L2_reg,
+            self.L1_reg,
             self.min_split_gain,
             self.min_child_weight,
-            self.L2_reg,
-            self.out_feature,
-            self.out_bin
         )
-        
-        f = int(self.out_feature[0])
-        b = int(self.out_bin[0])
         return (f, b)
     
     def grow_tree(self, gradient_histogram, hessian_histogram, node_indices, depth):
@@ -182,7 +213,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         forest = [{} for _ in range(self.n_estimators)]
         self.training_loss = []
     
-        for i in range(self.n_estimators):
+        for i in tqdm( range(self.n_estimators) ):
             self.residual = self.Y_gpu - self.gradients
     
             self.root_gradient_histogram, self.root_hessian_histogram = \
@@ -195,8 +226,8 @@ class WarpGBM(BaseEstimator, RegressorMixin):
                 depth=0
             )
             forest[i] = tree
-            loss = ((self.Y_gpu - self.gradients) ** 2).mean().item()
-            self.training_loss.append(loss)
+            # loss = ((self.Y_gpu - self.gradients) ** 2).mean().item()
+            # self.training_loss.append(loss)
             # print(f"🌲 Tree {i+1}/{self.n_estimators} - MSE: {loss:.6f}")
     
         print("Finished training forest.")
