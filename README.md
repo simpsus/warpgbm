@@ -18,7 +18,7 @@ WarpGBM is a high-performance, GPU-accelerated Gradient Boosted Decision Tree (G
 
 ## Performance Note
 
-In our initial tests on an NVIDIA 3090 (local) and A100 (Google Colab Pro), WarpGBM achieves **14x to 20x faster training times** compared to LightGBM using default configurations. It also consumes **significantly less RAM and CPU**. These early results hint at more thorough benchmarking to come.
+In our initial tests on an NVIDIA 3090 (local) and A100 (Google Colab Pro), WarpGBM achieves **14x to 20x faster training times** compared to LightGBM's CPU version and **2x faster** on the GPU version using default configurations. Speed also outperforms XGBoost and CatBoost on regression problems. It also consumes **significantly less RAM and CPU**. These early results hint at more thorough benchmarking to come.
 
 ---
 
