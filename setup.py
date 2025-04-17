@@ -22,6 +22,7 @@ def get_extensions():
                 sources=[
                     "warpgbm/cuda/histogram_kernel.cu",
                     "warpgbm/cuda/best_split_kernel.cu",
+                    "warpgbm/cuda/binner.cu",
                     "warpgbm/cuda/node_kernel.cpp",
                 ]
             )

@@ -22,21 +22,17 @@ def jit_find_best_split(
 ) -> Tuple[int, int]:
     F, B = G.size()
     Bm1 = B - 1
-    eps = 0
 
     GH = torch.stack([G, H], dim=0).cumsum(dim=2)  # [2, F, B]
-    GL, HL_raw = GH[0, :, :-1], GH[1, :, :-1]      # [F, B-1]
+    GL, HL = GH[0, :, :-1], GH[1, :, :-1]      # [F, B-1]
     GP, HP = GH[0, :, -1:], GH[1, :, -1:]          # [F, 1]
-    H_R_raw = HP - HL_raw
+    GR = GP - GL
+    HR = HP - HL
 
     # Validity mask using raw child hessians
-    valid = (HL_raw >= min_child_weight) & (H_R_raw >= min_child_weight)
-
-    # Closed-form gain
-    HL, HP = HL_raw + lambda_l2, HP + lambda_l2
-    num = (HP * GL - HL * GP).pow(2)
-    denom = HP * HL * (HP - HL) + eps
-    gain = torch.where(valid & (num / denom >= min_split_gain), num / denom, torch.full_like(num, -float("inf")))
+    valid = (HL >= min_child_weight) & (HR >= min_child_weight)
+    g = (GR**2)/(HR + lambda_l2) + (GL**2)/(HL + lambda_l2) - (GP**2)/(HP + lambda_l2)
+    gain = torch.where(valid & (g >= min_split_gain), g, -1.0)
 
     gain_flat = gain.view(-1)
     best_idx = torch.argmax(gain_flat)
@@ -105,42 +101,44 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         self.split_gains = torch.zeros((self.num_features, self.num_bins - 1), device=self.device)
         self.forest = self.grow_forest()
         return self
-
-    def compute_quantile_bins(self, X, num_bins):
-        quantiles = torch.linspace(0, 1, num_bins + 1)[1:-1]  # exclude 0% and 100%
-        bin_edges = torch.quantile(X, quantiles, dim=0)       # shape: [B-1, F]
-        return bin_edges.T  # shape: [F, B-1]
     
     def preprocess_gpu_data(self, X_np, Y_np, era_id_np):
-        self.num_samples, self.num_features = X_np.shape
-        Y_gpu = torch.from_numpy(Y_np).type(torch.float32).to(self.device)
-        era_id_gpu = torch.from_numpy(era_id_np).type(torch.int32).to(self.device)
-        is_integer_type = np.issubdtype(X_np.dtype, np.integer)
-        if is_integer_type:
-            max_vals = X_np.max(axis=0)
-            if np.all(max_vals < self.num_bins):
-                print("Detected pre-binned integer input — skipping quantile binning.")
-                bin_indices = torch.from_numpy(X_np).to(self.device).contiguous().to(torch.int8)
-    
-                # We'll store None or an empty tensor in self.bin_edges
-                # to indicate that we skip binning at predict-time
-                bin_edges = torch.arange(1, self.num_bins, dtype=torch.float32).repeat(self.num_features, 1)
-                bin_edges = bin_edges.to(self.device)
-                unique_eras, era_indices = torch.unique(era_id_gpu, return_inverse=True)
-                return bin_indices, era_indices, bin_edges, unique_eras, Y_gpu
-            else:
-                print("Integer input detected, but values exceed num_bins — falling back to quantile binning.")
-    
-        print("Performing quantile binning on CPU...")
-        X_cpu = torch.from_numpy(X_np).type(torch.float32)  # CPU tensor
-        bin_edges_cpu = self.compute_quantile_bins(X_cpu, self.num_bins).type(torch.float32).contiguous()
-        bin_indices_cpu = torch.empty((self.num_samples, self.num_features), dtype=torch.int8)
-        for f in range(self.num_features):
-            bin_indices_cpu[:, f] = torch.bucketize(X_cpu[:, f], bin_edges_cpu[f], right=False).type(torch.int8)
-        bin_indices = bin_indices_cpu.to(self.device).contiguous()
-        bin_edges = bin_edges_cpu.to(self.device)
-        unique_eras, era_indices = torch.unique(era_id_gpu, return_inverse=True)
-        return bin_indices, era_indices, bin_edges, unique_eras, Y_gpu
+        with torch.no_grad():
+            self.num_samples, self.num_features = X_np.shape
+            Y_gpu = torch.from_numpy(Y_np).type(torch.float32).to(self.device)
+            era_id_gpu = torch.from_numpy(era_id_np).type(torch.int32).to(self.device)
+            is_integer_type = np.issubdtype(X_np.dtype, np.integer)
+            if is_integer_type:
+                max_vals = X_np.max(axis=0)
+                if np.all(max_vals < self.num_bins):
+                    print("Detected pre-binned integer input — skipping quantile binning.")
+                    bin_indices = torch.from_numpy(X_np).to(self.device).contiguous().to(torch.int8)
+        
+                    # We'll store None or an empty tensor in self.bin_edges
+                    # to indicate that we skip binning at predict-time
+                    bin_edges = torch.arange(1, self.num_bins, dtype=torch.float32).repeat(self.num_features, 1)
+                    bin_edges = bin_edges.to(self.device)
+                    unique_eras, era_indices = torch.unique(era_id_gpu, return_inverse=True)
+                    return bin_indices, era_indices, bin_edges, unique_eras, Y_gpu
+                else:
+                    print("Integer input detected, but values exceed num_bins — falling back to quantile binning.")
+        
+            bin_indices = torch.empty((self.num_samples, self.num_features), dtype=torch.int8, device='cuda')
+            bin_edges = torch.empty((self.num_features, self.num_bins - 1), dtype=torch.float32, device='cuda')
+
+            X_np = torch.from_numpy(X_np).to(torch.float32).pin_memory()
+
+            for f in range(self.num_features):
+                X_f = X_np[:, f].to('cuda', non_blocking=True)
+                quantiles = torch.linspace(0, 1, self.num_bins + 1, device='cuda', dtype=X_f.dtype)[1:-1]
+                bin_edges_f = torch.quantile(X_f, quantiles, dim=0).contiguous()  # shape: [B-1] for 1D input
+                bin_indices_f = bin_indices[:, f].contiguous()  # view into output
+                node_kernel.custom_cuda_binner(X_f, bin_edges_f, bin_indices_f)
+                bin_indices[:,f] = bin_indices_f
+                bin_edges[f,:] = bin_edges_f
+
+            unique_eras, era_indices = torch.unique(era_id_gpu, return_inverse=True)
+            return bin_indices, era_indices, bin_edges, unique_eras, Y_gpu
 
     def compute_histograms(self, bin_indices_sub, gradients):
         grad_hist = torch.zeros((self.num_features, self.num_bins), device=self.device, dtype=torch.float32)
@@ -210,22 +208,23 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         return { "feature": best_feature, "bin": best_bin, "left": left_child, "right": right_child }
 
     def grow_forest(self):
-        forest = [{} for _ in range(self.n_estimators)]
-        self.training_loss = []
-    
-        for i in tqdm( range(self.n_estimators) ):
-            self.residual = self.Y_gpu - self.gradients
-    
-            self.root_gradient_histogram, self.root_hessian_histogram = \
-                self.compute_histograms(self.bin_indices, self.residual)
-    
-            tree = self.grow_tree(
-                self.root_gradient_histogram,
-                self.root_hessian_histogram,
-                self.root_node_indices,
-                depth=0
-            )
-            forest[i] = tree
+        with torch.no_grad():
+            forest = [{} for _ in range(self.n_estimators)]
+            self.training_loss = []
+        
+            for i in tqdm( range(self.n_estimators) ):
+                self.residual = self.Y_gpu - self.gradients
+        
+                self.root_gradient_histogram, self.root_hessian_histogram = \
+                    self.compute_histograms(self.bin_indices, self.residual)
+        
+                tree = self.grow_tree(
+                    self.root_gradient_histogram,
+                    self.root_hessian_histogram,
+                    self.root_node_indices,
+                    depth=0
+                )
+                forest[i] = tree
             # loss = ((self.Y_gpu - self.gradients) ** 2).mean().item()
             # self.training_loss.append(loss)
             # print(f"🌲 Tree {i+1}/{self.n_estimators} - MSE: {loss:.6f}")
@@ -239,103 +238,104 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         We assume `flatten_forest_to_tensors` has produced self.flat_forest with
         "features", "thresholds", "leaf_values", all shaped [n_trees, max_nodes].
         """
-        # 1) Convert X_np -> bin_indices
-        is_integer_type = np.issubdtype(X_np.dtype, np.integer)
-        if is_integer_type:
-            max_vals = X_np.max(axis=0)
-            if np.all(max_vals < self.num_bins):
-                bin_indices = X_np.astype(np.int8)
+        with torch.no_grad():
+            # 1) Convert X_np -> bin_indices
+            is_integer_type = np.issubdtype(X_np.dtype, np.integer)
+            if is_integer_type:
+                max_vals = X_np.max(axis=0)
+                if np.all(max_vals < self.num_bins):
+                    bin_indices = X_np.astype(np.int8)
+                else:
+                    raise ValueError("Pre-binned integers must be < num_bins")
             else:
-                raise ValueError("Pre-binned integers must be < num_bins")
-        else:
-            X_cpu = torch.from_numpy(X_np).type(torch.float32)
-            bin_indices = torch.empty((X_np.shape[0], X_np.shape[1]), dtype=torch.int8)
-            bin_edges_cpu = self.bin_edges.to('cpu')
-            for f in range(self.num_features):
-                bin_indices[:, f] = torch.bucketize(X_cpu[:, f], bin_edges_cpu[f], right=False).type(torch.int8)
-            bin_indices = bin_indices.numpy()
+                X_cpu = torch.from_numpy(X_np).type(torch.float32)
+                bin_indices = torch.empty((X_np.shape[0], X_np.shape[1]), dtype=torch.int8)
+                bin_edges_cpu = self.bin_edges.to('cpu')
+                for f in range(self.num_features):
+                    bin_indices[:, f] = torch.bucketize(X_cpu[:, f], bin_edges_cpu[f], right=False).type(torch.int8)
+                bin_indices = bin_indices.numpy()
 
-        # 2) Ensure we have a padded representation
-        self.flat_forest = self.flatten_forest_to_tensors(self.forest)
+            # 2) Ensure we have a padded representation
+            self.flat_forest = self.flatten_forest_to_tensors(self.forest)
 
-        features_t   = self.flat_forest["features"]      # [n_trees, max_nodes], int16
-        thresholds_t = self.flat_forest["thresholds"]    # [n_trees, max_nodes], int16
-        values_t     = self.flat_forest["leaf_values"]    # [n_trees, max_nodes], float32
-        max_nodes    = self.flat_forest["max_nodes"]
+            features_t   = self.flat_forest["features"]      # [n_trees, max_nodes], int16
+            thresholds_t = self.flat_forest["thresholds"]    # [n_trees, max_nodes], int16
+            values_t     = self.flat_forest["leaf_values"]    # [n_trees, max_nodes], float32
+            max_nodes    = self.flat_forest["max_nodes"]
 
-        n_trees = features_t.shape[0]
-        N       = bin_indices.shape[0]
-        out     = np.zeros(N, dtype=np.float32)
+            n_trees = features_t.shape[0]
+            N       = bin_indices.shape[0]
+            out     = np.zeros(N, dtype=np.float32)
 
-        # 3) Process rows in chunks
-        for start in tqdm(range(0, N, chunk_size)):
-            end = min(start + chunk_size, N)
-            chunk_np  = bin_indices[start:end]  # shape [chunk_size, F]
-            chunk_gpu = torch.from_numpy(chunk_np).to(self.device)  # [chunk_size, F], int8
+            # 3) Process rows in chunks
+            for start in tqdm(range(0, N, chunk_size)):
+                end = min(start + chunk_size, N)
+                chunk_np  = bin_indices[start:end]  # shape [chunk_size, F]
+                chunk_gpu = torch.from_numpy(chunk_np).to(self.device)  # [chunk_size, F], int8
 
-            # Accumulate raw (unscaled) leaf sums
-            chunk_preds = torch.zeros((end - start,), dtype=torch.float32, device=self.device)
+                # Accumulate raw (unscaled) leaf sums
+                chunk_preds = torch.zeros((end - start,), dtype=torch.float32, device=self.device)
 
-            # node_idx[i] tracks the current node index in the padded tree for row i
-            node_idx = torch.zeros((end - start,), dtype=torch.int32, device=self.device)
+                # node_idx[i] tracks the current node index in the padded tree for row i
+                node_idx = torch.zeros((end - start,), dtype=torch.int32, device=self.device)
 
-            # 'active' is a boolean mask over [0..(end-start-1)], indicating which rows haven't reached a leaf
-            active = torch.ones((end - start,), dtype=torch.bool, device=self.device)
+                # 'active' is a boolean mask over [0..(end-start-1)], indicating which rows haven't reached a leaf
+                active = torch.ones((end - start,), dtype=torch.bool, device=self.device)
 
-            for t in range(n_trees):
-                # Reset for each tree (each tree is independent)
-                node_idx.fill_(0)
-                active.fill_(True)
+                for t in range(n_trees):
+                    # Reset for each tree (each tree is independent)
+                    node_idx.fill_(0)
+                    active.fill_(True)
 
-                tree_features = features_t[t]     # shape [max_nodes], int16
-                tree_thresh   = thresholds_t[t]    # shape [max_nodes], int16
-                tree_values   = values_t[t]          # shape [max_nodes], float32
+                    tree_features = features_t[t]     # shape [max_nodes], int16
+                    tree_thresh   = thresholds_t[t]    # shape [max_nodes], int16
+                    tree_values   = values_t[t]          # shape [max_nodes], float32
 
-                # Up to self.max_depth+1 layers
-                for _level in range(self.max_depth + 1):
-                    active_idx = active.nonzero(as_tuple=True)[0]
-                    if active_idx.numel() == 0:
-                        break  # all rows are done in this tree
+                    # Up to self.max_depth+1 layers
+                    for _level in range(self.max_depth + 1):
+                        active_idx = active.nonzero(as_tuple=True)[0]
+                        if active_idx.numel() == 0:
+                            break  # all rows are done in this tree
 
-                    current_node_idx = node_idx[active_idx]
-                    f    = tree_features[current_node_idx]    # shape [#active], int16
-                    thr  = tree_thresh[current_node_idx]       # shape [#active], int16
-                    vals = tree_values[current_node_idx]       # shape [#active], float32
+                        current_node_idx = node_idx[active_idx]
+                        f    = tree_features[current_node_idx]    # shape [#active], int16
+                        thr  = tree_thresh[current_node_idx]       # shape [#active], int16
+                        vals = tree_values[current_node_idx]       # shape [#active], float32
 
-                    mask_no_node = (f == -2)
-                    mask_leaf    = (f == -1)
+                        mask_no_node = (f == -2)
+                        mask_leaf    = (f == -1)
 
-                    # If leaf, add leaf value and mark inactive.
-                    if mask_leaf.any():
-                        leaf_rows = active_idx[mask_leaf]
-                        chunk_preds[leaf_rows] += vals[mask_leaf]
-                        active[leaf_rows] = False
+                        # If leaf, add leaf value and mark inactive.
+                        if mask_leaf.any():
+                            leaf_rows = active_idx[mask_leaf]
+                            chunk_preds[leaf_rows] += vals[mask_leaf]
+                            active[leaf_rows] = False
 
-                    # If no node, mark inactive.
-                    if mask_no_node.any():
-                        no_node_rows = active_idx[mask_no_node]
-                        active[no_node_rows] = False
+                        # If no node, mark inactive.
+                        if mask_no_node.any():
+                            no_node_rows = active_idx[mask_no_node]
+                            active[no_node_rows] = False
 
-                    # For internal nodes, perform bin comparison.
-                    mask_internal = (~mask_leaf & ~mask_no_node)
-                    if mask_internal.any():
-                        internal_rows = active_idx[mask_internal]
-                        act_f   = f[mask_internal].long()
-                        act_thr = thr[mask_internal]
-                        binvals = chunk_gpu[internal_rows, act_f]
-                        go_left = (binvals <= act_thr)
-                        new_left_idx  = current_node_idx[mask_internal] * 2 + 1
-                        new_right_idx = current_node_idx[mask_internal] * 2 + 2
-                        node_idx[internal_rows[go_left]]  = new_left_idx[go_left]
-                        node_idx[internal_rows[~go_left]] = new_right_idx[~go_left]
-                # end per-tree layer loop
-            # end for each tree
+                        # For internal nodes, perform bin comparison.
+                        mask_internal = (~mask_leaf & ~mask_no_node)
+                        if mask_internal.any():
+                            internal_rows = active_idx[mask_internal]
+                            act_f   = f[mask_internal].long()
+                            act_thr = thr[mask_internal]
+                            binvals = chunk_gpu[internal_rows, act_f]
+                            go_left = (binvals <= act_thr)
+                            new_left_idx  = current_node_idx[mask_internal] * 2 + 1
+                            new_right_idx = current_node_idx[mask_internal] * 2 + 2
+                            node_idx[internal_rows[go_left]]  = new_left_idx[go_left]
+                            node_idx[internal_rows[~go_left]] = new_right_idx[~go_left]
+                    # end per-tree layer loop
+                # end for each tree
 
-            out[start:end] = (
-                self.base_prediction + self.learning_rate * chunk_preds
-            ).cpu().numpy()
+                out[start:end] = (
+                    self.base_prediction + self.learning_rate * chunk_preds
+                ).cpu().numpy()
 
-        return out
+            return out
 
     def flatten_forest_to_tensors(self, forest):
         """
