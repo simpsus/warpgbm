@@ -25,16 +25,31 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         histogram_computer='hist3',
         threads_per_block=64,
         rows_per_thread=4,
-        L2_reg = 1e-6,
-        L1_reg = 0.0,
-        device = 'cuda'
+        L2_reg=1e-6,
+        L1_reg=0.0,
+        device='cuda'
     ):
+        # Validate arguments
+        self._validate_hyperparams(
+            num_bins=num_bins,
+            max_depth=max_depth,
+            learning_rate=learning_rate,
+            n_estimators=n_estimators,
+            min_child_weight=min_child_weight,
+            min_split_gain=min_split_gain,
+            histogram_computer=histogram_computer,
+            threads_per_block=threads_per_block,
+            rows_per_thread=rows_per_thread,
+            L2_reg=L2_reg,
+            L1_reg=L1_reg
+        )
+
         self.num_bins = num_bins
         self.max_depth = max_depth
         self.learning_rate = learning_rate
         self.n_estimators = n_estimators
         self.forest = None
-        self.bin_edges = None  # shape: [num_features, num_bins-1] if using quantile binning
+        self.bin_edges = None
         self.base_prediction = None
         self.unique_eras = None
         self.device = device
@@ -54,6 +69,45 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         self.rows_per_thread = rows_per_thread
         self.L2_reg = L2_reg
         self.L1_reg = L1_reg
+
+    def _validate_hyperparams(self, **kwargs):
+        # Type checks
+        int_params = [
+            "num_bins", "max_depth", "n_estimators", "min_child_weight",
+            "threads_per_block", "rows_per_thread"
+        ]
+        float_params = [
+            "learning_rate", "min_split_gain", "L2_reg", "L1_reg"
+        ]
+
+        for param in int_params:
+            if not isinstance(kwargs[param], int):
+                raise TypeError(f"{param} must be an integer, got {type(kwargs[param])}.")
+
+        for param in float_params:
+            if not isinstance(kwargs[param], (float, int)):  # Accept ints as valid floats
+                raise TypeError(f"{param} must be a float, got {type(kwargs[param])}.")
+            
+        if not ( 2 <= kwargs["num_bins"] <= 127 ):
+            raise ValueError("num_bins must be between 2 and 127 inclusive.")
+        if kwargs["max_depth"] < 1:
+            raise ValueError("max_depth must be at least 1.")
+        if not (0.0 < kwargs["learning_rate"] <= 1.0):
+            raise ValueError("learning_rate must be in (0.0, 1.0].")
+        if kwargs["n_estimators"] <= 0:
+            raise ValueError("n_estimators must be positive.")
+        if kwargs["min_child_weight"] < 1:
+            raise ValueError("min_child_weight must be a positive integer.")
+        if kwargs["min_split_gain"] < 0:
+            raise ValueError("min_split_gain must be non-negative.")
+        if kwargs["threads_per_block"] <= 0 or kwargs["threads_per_block"] % 32 != 0:
+            raise ValueError("threads_per_block should be a positive multiple of 32 (warp size).")
+        if not ( 1 <= kwargs["rows_per_thread"] <= 16 ):
+            raise ValueError("rows_per_thread must be positive between 1 and 16 inclusive.")
+        if kwargs["L2_reg"] < 0 or kwargs["L1_reg"] < 0:
+            raise ValueError("L2_reg and L1_reg must be non-negative.")
+        if kwargs["histogram_computer"] not in histogram_kernels:
+            raise ValueError(f"Invalid histogram_computer: {kwargs['histogram_computer']}. Choose from {list(histogram_kernels.keys())}.")
 
     def fit(self, X, y, era_id=None):
         if era_id is None:
