@@ -2,7 +2,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
-__global__ void best_split_kernel(
+__global__ void best_split_kernel_global_only(
     const float *__restrict__ G, // [F x B]
     const float *__restrict__ H, // [F x B]
     int F,
@@ -10,21 +10,14 @@ __global__ void best_split_kernel(
     float min_split_gain,
     float min_child_samples,
     float eps,
-    int *out_feature,
-    int *out_bin,
-    void *shared_mem)
+    float *__restrict__ best_gains, // [F]
+    int *__restrict__ best_bins     // [F]
+)
 {
     int f = blockIdx.x * blockDim.x + threadIdx.x;
     if (f >= F)
         return;
 
-    // Cast shared memory
-    extern __shared__ char smem[];
-    float *gains = reinterpret_cast<float *>(smem);
-    int *features = reinterpret_cast<int *>(&gains[blockDim.x]);
-    int *bins = reinterpret_cast<int *>(&features[blockDim.x]);
-
-    // Calculate total G and H for this feature
     float G_total = 0.0f, H_total = 0.0f;
     for (int b = 0; b < B; ++b)
     {
@@ -43,7 +36,7 @@ __global__ void best_split_kernel(
         float G_R = G_total - G_L;
         float H_R = H_total - H_L;
 
-        if (H_L > min_child_samples && H_R > min_child_samples)
+        if (H_L >= min_child_samples && H_R >= min_child_samples)
         {
             float gain = (G_L * G_L) / (H_L + eps) + (G_R * G_R) / (H_R + eps);
             if (gain > best_gain)
@@ -54,50 +47,26 @@ __global__ void best_split_kernel(
         }
     }
 
-    gains[threadIdx.x] = best_gain;
-    features[threadIdx.x] = f;
-    bins[threadIdx.x] = best_bin;
-    __syncthreads();
-
-    // Thread 0 in each block finds best among its block
-    if (threadIdx.x == 0)
-    {
-        float block_best_gain = min_split_gain;
-        int block_best_feature = -1;
-        int block_best_bin = -1;
-        for (int i = 0; i < blockDim.x && blockIdx.x * blockDim.x + i < F; ++i)
-        {
-            if (gains[i] > block_best_gain)
-            {
-                block_best_gain = gains[i];
-                block_best_feature = features[i];
-                block_best_bin = bins[i];
-            }
-        }
-
-        // Write to global outputs
-        *out_feature = block_best_feature;
-        *out_bin = block_best_bin;
-    }
+    best_gains[f] = best_gain;
+    best_bins[f] = best_bin;
 }
 
 void launch_best_split_kernel_cuda(
-    const at::Tensor &G,
-    const at::Tensor &H,
-    int F,
-    int B,
+    const at::Tensor &G, // [F x B]
+    const at::Tensor &H, // [F x B]
     float min_split_gain,
     float min_child_samples,
     float eps,
-    at::Tensor &out_feature,
-    at::Tensor &out_bin)
+    at::Tensor &best_gains, // [F], float32
+    at::Tensor &best_bins,  // [F], int32
+    int threads)
 {
-    int threads = 256;
+    int F = G.size(0);
+    int B = G.size(1);
+
     int blocks = (F + threads - 1) / threads;
 
-    size_t shared_mem_bytes = threads * (sizeof(float) + 2 * sizeof(int));
-
-    best_split_kernel<<<blocks, threads, shared_mem_bytes>>>(
+    best_split_kernel_global_only<<<blocks, threads>>>(
         G.data_ptr<float>(),
         H.data_ptr<float>(),
         F,
@@ -105,8 +74,6 @@ void launch_best_split_kernel_cuda(
         min_split_gain,
         min_child_samples,
         eps,
-        out_feature.data_ptr<int>(),
-        out_bin.data_ptr<int>(),
-        nullptr // shared memory pointer not needed; just launch size
-    );
+        best_gains.data_ptr<float>(),
+        best_bins.data_ptr<int>());
 }

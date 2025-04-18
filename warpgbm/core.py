@@ -12,36 +12,6 @@ histogram_kernels = {
     'hist3': node_kernel.compute_histogram3
 }
 
-@torch.jit.script
-def jit_find_best_split(
-    G: Tensor, H: Tensor, 
-    lambda_l2: float, 
-    lambda_l1: float,  # unused placeholder for now
-    min_split_gain: float, 
-    min_child_weight: float
-) -> Tuple[int, int]:
-    F, B = G.size()
-    Bm1 = B - 1
-
-    GH = torch.stack([G, H], dim=0).cumsum(dim=2)  # [2, F, B]
-    GL, HL = GH[0, :, :-1], GH[1, :, :-1]      # [F, B-1]
-    GP, HP = GH[0, :, -1:], GH[1, :, -1:]          # [F, 1]
-    GR = GP - GL
-    HR = HP - HL
-
-    # Validity mask using raw child hessians
-    valid = (HL >= min_child_weight) & (HR >= min_child_weight)
-    g = (GR**2)/(HR + lambda_l2) + (GL**2)/(HL + lambda_l2) - (GP**2)/(HP + lambda_l2)
-    gain = torch.where(valid & (g >= min_split_gain), g, -1.0)
-
-    gain_flat = gain.view(-1)
-    best_idx = torch.argmax(gain_flat)
-
-    if gain_flat[best_idx].item() == float('-inf'):
-        return -1, -1
-
-    return best_idx // Bm1, best_idx % Bm1
-
 class WarpGBM(BaseEstimator, RegressorMixin):
     def __init__(
         self,
@@ -76,12 +46,8 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         self.Y_gpu = None
         self.num_features = None
         self.num_samples = None
-        self.out_feature = torch.zeros(1, device=self.device, dtype=torch.int32)
-        self.out_bin = torch.zeros(1, device=self.device, dtype=torch.int32)
         self.min_child_weight = min_child_weight
         self.min_split_gain = min_split_gain
-        self.best_gain = torch.tensor([-float('inf')], dtype=torch.float32, device=self.device)
-        self.best_feature = torch.tensor([-1], dtype=torch.int32, device=self.device)
         self.best_bin = torch.tensor([-1], dtype=torch.int32, device=self.device)
         self.compute_histogram = histogram_kernels[histogram_computer]
         self.threads_per_block = threads_per_block
@@ -98,8 +64,10 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         self.root_node_indices = torch.arange(self.num_samples, device=self.device)
         self.base_prediction = self.Y_gpu.mean().item()
         self.gradients += self.base_prediction
-        self.split_gains = torch.zeros((self.num_features, self.num_bins - 1), device=self.device)
-        self.forest = self.grow_forest()
+        self.best_gains = torch.zeros(self.num_features, device=self.device)
+        self.best_bins = torch.zeros(self.num_features, device=self.device, dtype=torch.int32)
+        with torch.no_grad():
+            self.forest = self.grow_forest()
         return self
     
     def preprocess_gpu_data(self, X_np, Y_np, era_id_np):
@@ -156,15 +124,24 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         return grad_hist, hess_hist
 
     def find_best_split(self, gradient_histogram, hessian_histogram):
-        f,b = jit_find_best_split(
+        node_kernel.compute_split(
             gradient_histogram,
             hessian_histogram,
-            self.L2_reg,
-            self.L1_reg,
             self.min_split_gain,
             self.min_child_weight,
+            self.L2_reg,
+            self.best_gains,
+            self.best_bins,
+            self.threads_per_block
         )
-        return (f, b)
+
+        if torch.all(self.best_bins == -1):
+            return -1, -1  # No valid split found
+
+        f = torch.argmax(self.best_gains).item()
+        b = self.best_bins[f].item()
+
+        return f, b
     
     def grow_tree(self, gradient_histogram, hessian_histogram, node_indices, depth):
         if depth == self.max_depth:
@@ -208,27 +185,26 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         return { "feature": best_feature, "bin": best_bin, "left": left_child, "right": right_child }
 
     def grow_forest(self):
-        with torch.no_grad():
-            forest = [{} for _ in range(self.n_estimators)]
-            self.training_loss = []
-        
-            for i in tqdm( range(self.n_estimators) ):
-                self.residual = self.Y_gpu - self.gradients
-        
-                self.root_gradient_histogram, self.root_hessian_histogram = \
-                    self.compute_histograms(self.bin_indices, self.residual)
-        
-                tree = self.grow_tree(
-                    self.root_gradient_histogram,
-                    self.root_hessian_histogram,
-                    self.root_node_indices,
-                    depth=0
-                )
-                forest[i] = tree
-            # loss = ((self.Y_gpu - self.gradients) ** 2).mean().item()
-            # self.training_loss.append(loss)
-            # print(f"🌲 Tree {i+1}/{self.n_estimators} - MSE: {loss:.6f}")
+        forest = [{} for _ in range(self.n_estimators)]
+        self.training_loss = []
     
+        for i in tqdm( range(self.n_estimators) ):
+            self.residual = self.Y_gpu - self.gradients
+    
+            self.root_gradient_histogram, self.root_hessian_histogram = \
+                self.compute_histograms(self.bin_indices, self.residual)
+    
+            tree = self.grow_tree(
+                self.root_gradient_histogram,
+                self.root_hessian_histogram,
+                self.root_node_indices,
+                depth=0
+            )
+            forest[i] = tree
+        # loss = ((self.Y_gpu - self.gradients) ** 2).mean().item()
+        # self.training_loss.append(loss)
+        # print(f"🌲 Tree {i+1}/{self.n_estimators} - MSE: {loss:.6f}")
+
         print("Finished training forest.")
         return forest
 

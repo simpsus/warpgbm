@@ -21,15 +21,14 @@ void launch_histogram_kernel_cuda_2(
     int rows_per_thread = 1);
 
 void launch_best_split_kernel_cuda(
-    const at::Tensor &G,
-    const at::Tensor &H,
-    int F,
-    int B,
+    const at::Tensor &G, // [F x B]
+    const at::Tensor &H, // [F x B]
     float min_split_gain,
     float min_child_samples,
     float eps,
-    at::Tensor &out_feature,
-    at::Tensor &out_bin);
+    at::Tensor &best_gains, // [F], float32
+    at::Tensor &best_bins,
+    int threads);
 
 void launch_histogram_kernel_cuda_configurable(
     const at::Tensor &bin_indices,
