@@ -25,7 +25,7 @@ def test_fit_predictpytee_correlation():
             learning_rate=1,
             verbosity=False,
             histogram_computer=hist_type,
-            threads_per_block=128,
+            threads_per_block=64,
             rows_per_thread=4
         )
 
