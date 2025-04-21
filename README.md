@@ -22,6 +22,23 @@ In our initial tests on an NVIDIA 3090 (local) and A100 (Google Colab Pro), Warp
 
 ---
 
+## Benchmarks
+
+### Scikit-Learn Synthetic Data: 1 Million Rows and 1,000 Features
+
+In this benchmark we compare the speed and in-sample correlation of **WarpGBM v0.1.19** against LightGBM, XGBoost and CatBoost, all with their GPU-enabled versions. This benchmark runs on Google Colab with the L4 GPU environment. The CPU versions don't even come close to the speed here so we didn't test them.
+
+```
+   WarpGBM:   corr = 0.8882, train = 21.8s, infer = 11.6s 
+   XGBoost:   corr = 0.8877, train = 33.4s, infer = 8.1s
+  LightGBM:   corr = 0.8604, train = 30.2s, infer = 1.4s
+  CatBoost:   corr = 0.8935, train = 377.9s, infer = 375.8s
+```
+
+Colab Notebook: https://colab.research.google.com/drive/16U1kbYlD5HibGbnF5NGsjChZ1p1IA2pK
+
+---
+
 ## Installation
 
 ### Recommended (GitHub, always latest):
