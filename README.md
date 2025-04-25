@@ -209,3 +209,9 @@ WarpGBM builds on the shoulders of PyTorch, scikit-learn, LightGBM, and the CUDA
 
 ---
 
+## Version Notes
+
+### v0.1.21
+
+- Vectorized predict function replaced with CUDA kernel (`warpgbm/cuda/predict.cu`), parallelizing per sample, per tree.
+

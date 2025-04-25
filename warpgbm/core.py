@@ -218,10 +218,6 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         left_size = left_indices.numel()
         right_size = right_indices.numel()
 
-        if left_size == 0 or right_size == 0:
-            leaf_value = self.residual[node_indices].mean()
-            self.gradients[node_indices] += self.learning_rate * leaf_value
-            return {"leaf_value": leaf_value.item(), "samples": parent_size}
 
         if left_size <= right_size:
             grad_hist_left, hess_hist_left = self.compute_histograms( self.bin_indices[left_indices], self.residual[left_indices] )
@@ -262,291 +258,84 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         print("Finished training forest.")
         return forest
 
-    def predict(self, X_np, chunk_size=50000):
-        """
-        Vectorized predict using a padded layer-by-layer approach.
-        We assume `flatten_forest_to_tensors` has produced self.flat_forest with
-        "features", "thresholds", "leaf_values", all shaped [n_trees, max_nodes].
-        """
+    def predict(self, X_np):
+        X_tensor = torch.from_numpy(X_np).to(torch.float32).pin_memory()
+        num_samples = X_tensor.size(0)
+        bin_indices = torch.zeros((num_samples, self.num_features), dtype=torch.int8, device=self.device)
+
         with torch.no_grad():
-            # 1) Convert X_np -> bin_indices
-            is_integer_type = np.issubdtype(X_np.dtype, np.integer)
-            if is_integer_type:
-                max_vals = X_np.max(axis=0)
-                if np.all(max_vals < self.num_bins):
-                    bin_indices = X_np.astype(np.int8)
-                else:
-                    raise ValueError("Pre-binned integers must be < num_bins")
-            else:
-                X_cpu = torch.from_numpy(X_np).type(torch.float32)
-                bin_indices = torch.empty((X_np.shape[0], X_np.shape[1]), dtype=torch.int8)
-                bin_edges_cpu = self.bin_edges.to('cpu')
-                for f in range(self.num_features):
-                    bin_indices[:, f] = torch.bucketize(X_cpu[:, f], bin_edges_cpu[f], right=False).type(torch.int8)
-                bin_indices = bin_indices.numpy()
-
-            # 2) Ensure we have a padded representation
-            self.flat_forest = self.flatten_forest_to_tensors(self.forest)
-
-            features_t   = self.flat_forest["features"]      # [n_trees, max_nodes], int16
-            thresholds_t = self.flat_forest["thresholds"]    # [n_trees, max_nodes], int16
-            values_t     = self.flat_forest["leaf_values"]    # [n_trees, max_nodes], float32
-            max_nodes    = self.flat_forest["max_nodes"]
-
-            n_trees = features_t.shape[0]
-            N       = bin_indices.shape[0]
-            out     = np.zeros(N, dtype=np.float32)
-
-            # 3) Process rows in chunks
-            for start in tqdm(range(0, N, chunk_size)):
-                end = min(start + chunk_size, N)
-                chunk_np  = bin_indices[start:end]  # shape [chunk_size, F]
-                chunk_gpu = torch.from_numpy(chunk_np).to(self.device)  # [chunk_size, F], int8
-
-                # Accumulate raw (unscaled) leaf sums
-                chunk_preds = torch.zeros((end - start,), dtype=torch.float32, device=self.device)
-
-                # node_idx[i] tracks the current node index in the padded tree for row i
-                node_idx = torch.zeros((end - start,), dtype=torch.int32, device=self.device)
-
-                # 'active' is a boolean mask over [0..(end-start-1)], indicating which rows haven't reached a leaf
-                active = torch.ones((end - start,), dtype=torch.bool, device=self.device)
-
-                for t in range(n_trees):
-                    # Reset for each tree (each tree is independent)
-                    node_idx.fill_(0)
-                    active.fill_(True)
-
-                    tree_features = features_t[t]     # shape [max_nodes], int16
-                    tree_thresh   = thresholds_t[t]    # shape [max_nodes], int16
-                    tree_values   = values_t[t]          # shape [max_nodes], float32
-
-                    # Up to self.max_depth+1 layers
-                    for _level in range(self.max_depth + 1):
-                        active_idx = active.nonzero(as_tuple=True)[0]
-                        if active_idx.numel() == 0:
-                            break  # all rows are done in this tree
-
-                        current_node_idx = node_idx[active_idx]
-                        f    = tree_features[current_node_idx]    # shape [#active], int16
-                        thr  = tree_thresh[current_node_idx]       # shape [#active], int16
-                        vals = tree_values[current_node_idx]       # shape [#active], float32
-
-                        mask_no_node = (f == -2)
-                        mask_leaf    = (f == -1)
-
-                        # If leaf, add leaf value and mark inactive.
-                        if mask_leaf.any():
-                            leaf_rows = active_idx[mask_leaf]
-                            chunk_preds[leaf_rows] += vals[mask_leaf]
-                            active[leaf_rows] = False
-
-                        # If no node, mark inactive.
-                        if mask_no_node.any():
-                            no_node_rows = active_idx[mask_no_node]
-                            active[no_node_rows] = False
-
-                        # For internal nodes, perform bin comparison.
-                        mask_internal = (~mask_leaf & ~mask_no_node)
-                        if mask_internal.any():
-                            internal_rows = active_idx[mask_internal]
-                            act_f   = f[mask_internal].long()
-                            act_thr = thr[mask_internal]
-                            binvals = chunk_gpu[internal_rows, act_f]
-                            go_left = (binvals <= act_thr)
-                            new_left_idx  = current_node_idx[mask_internal] * 2 + 1
-                            new_right_idx = current_node_idx[mask_internal] * 2 + 2
-                            node_idx[internal_rows[go_left]]  = new_left_idx[go_left]
-                            node_idx[internal_rows[~go_left]] = new_right_idx[~go_left]
-                    # end per-tree layer loop
-                # end for each tree
-
-                out[start:end] = (
-                    self.base_prediction + self.learning_rate * chunk_preds
-                ).cpu().numpy()
-
-            return out
-
-    def flatten_forest_to_tensors(self, forest):
-        """
-        Convert a list of dict-based trees into a fixed-size array representation
-        for each tree, up to max_depth. Each tree is stored in a 'perfect binary tree'
-        layout:
-          - node 0 is the root
-          - node i has children (2*i + 1) and (2*i + 2), if within range
-          - feature = -2 indicates no node / invalid
-          - feature = -1 indicates a leaf node
-          - otherwise, an internal node with that feature.
-        """
-        n_trees = len(forest)
-        max_nodes = 2 ** (self.max_depth + 1) - 1  # total array slots per tree
-
-        # Allocate padded arrays (on CPU for ease of indexing).
-        feat_arr = np.full((n_trees, max_nodes), -2, dtype=np.int16)
-        thresh_arr = np.full((n_trees, max_nodes), -2, dtype=np.int16)
-        value_arr = np.zeros((n_trees, max_nodes), dtype=np.float32)
-
-        def fill_padded(tree, tree_idx, node_idx, depth):
-            """
-            Recursively fill feat_arr, thresh_arr, value_arr for a single tree.
-            If depth == self.max_depth, no children are added.
-            If there's no node, feature remains -2.
-            """
-            if "leaf_value" in tree:
-                feat_arr[tree_idx, node_idx] = -1
-                thresh_arr[tree_idx, node_idx] = -1
-                value_arr[tree_idx, node_idx] = tree["leaf_value"]
-                return
-
-            feat = tree["feature"]
-            bin_th = tree["bin"]
-
-            feat_arr[tree_idx, node_idx] = feat
-            thresh_arr[tree_idx, node_idx] = bin_th
-            # Internal nodes keep a 0 value.
-
-            if depth < self.max_depth:
-                left_idx  = 2 * node_idx + 1
-                right_idx = 2 * node_idx + 2
-                fill_padded(tree["left"],  tree_idx, left_idx, depth + 1)
-                fill_padded(tree["right"], tree_idx, right_idx, depth + 1)
-            # At max depth, children remain unfilled (-2).
-
-        for t, root in enumerate(forest):
-            fill_padded(root, t, 0, 0)
-
-        # Convert to torch Tensors on the proper device.
-        features_t = torch.from_numpy(feat_arr).to(self.device)
-        thresholds_t = torch.from_numpy(thresh_arr).to(self.device)
-        leaf_values_t = torch.from_numpy(value_arr).to(self.device)
-
-        return {
-            "features": features_t,       # [n_trees, max_nodes]
-            "thresholds": thresholds_t,     # [n_trees, max_nodes]
-            "leaf_values": leaf_values_t,   # [n_trees, max_nodes]
-            "max_nodes": max_nodes
-        }
-
-    def predict_numpy(self, X_np, chunk_size=50000):
-        """
-        Fully NumPy-based version of predict_fast.
-        Assumes flatten_forest_to_tensors has been called and `self.flat_forest` is ready.
-        """
-        # 1) Convert X_np -> bin_indices
-        is_integer_type = np.issubdtype(X_np.dtype, np.integer)
-        if is_integer_type:
-            max_vals = X_np.max(axis=0)
-            if np.all(max_vals < self.num_bins):
-                bin_indices = X_np.astype(np.int8)
-            else:
-                raise ValueError("Pre-binned integers must be < num_bins")
-        else:
-            bin_indices = np.empty_like(X_np, dtype=np.int8)
-            # Ensure bin_edges are NumPy arrays
-            if isinstance(self.bin_edges[0], torch.Tensor):
-                bin_edges_np = [be.cpu().numpy() for be in self.bin_edges]
-            else:
-                bin_edges_np = self.bin_edges
-
             for f in range(self.num_features):
-                bin_indices[:, f] = np.searchsorted(bin_edges_np[f], X_np[:, f], side='left')
+                X_f = X_tensor[:, f].to(self.device, non_blocking=True)
+                bin_edges_f = self.bin_edges[f]
+                bin_indices_f = bin_indices[:, f].contiguous()
+                node_kernel.custom_cuda_binner(X_f, bin_edges_f, bin_indices_f)
+                bin_indices[:, f] = bin_indices_f
 
-        # Ensure we have a padded representation
-        self.flat_forest = self.flatten_forest(self.forest)
+        tree_tensor = torch.stack([
+            self.flatten_tree(tree, max_nodes=2**(self.max_depth + 1))
+            for tree in self.forest
+        ]).to(self.device)
 
-        # 2) Padded forest arrays (already NumPy now)
-        features_t   = self.flat_forest["features"]      # [n_trees, max_nodes], int16
-        thresholds_t = self.flat_forest["thresholds"]    # [n_trees, max_nodes], int16
-        values_t     = self.flat_forest["leaf_values"]   # [n_trees, max_nodes], float32
-        max_nodes    = self.flat_forest["max_nodes"]
-        n_trees      = features_t.shape[0]
-        N            = bin_indices.shape[0]
-        out          = np.zeros(N, dtype=np.float32)
+        out = torch.zeros(num_samples, device=self.device)
+        node_kernel.predict_forest(
+            bin_indices.contiguous(),
+            tree_tensor.contiguous(),
+            self.learning_rate,
+            out
+        )
 
-        # 3) Process in chunks
-        for start in tqdm( range(0, N, chunk_size) ):
-            end = min(start + chunk_size, N)
-            chunk = bin_indices[start:end]  # [chunk_size, F]
-            chunk_preds = np.zeros(end - start, dtype=np.float32)
+        return out.cpu().numpy()
 
-            for t in range(n_trees):
-                node_idx = np.zeros(end - start, dtype=np.int32)
-                active = np.ones(end - start, dtype=bool)
+    def flatten_tree(self, tree, max_nodes):
+        """
+        Convert a recursive tree structure into a flat matrix format.
+        
+        Each row in the output represents a node:
+        - Columns: [feature, bin, left_id, right_id, is_leaf, value]
+        - Internal nodes fill columns 0–3 and set is_leaf = 0
+        - Leaf nodes fill only value and set is_leaf = 1
+        
+        Args:
+            tree (list): A list containing a single root node (recursive dict form).
+            max_nodes (int): Max number of nodes to allocate in the flat matrix.
+            
+        Returns:
+            torch.Tensor: [max_nodes x 6] matrix representing the flattened tree.
+        """
+        flat = torch.full((max_nodes, 6), float('nan'), dtype=torch.float32)
+        node_counter = [0]
+        node_list = []
 
-                tree_features = features_t[t]   # [max_nodes]
-                tree_thresh   = thresholds_t[t] # [max_nodes]
-                tree_values   = values_t[t]     # [max_nodes]
+        def walk(node):
+            curr_id = node_counter[0]
+            node_counter[0] += 1
 
-                for _level in range(self.max_depth + 1):
-                    active_idx = np.nonzero(active)[0]
-                    if active_idx.size == 0:
-                        break
+            new_node = {'node_id': curr_id}
+            if 'leaf_value' in node:
+                new_node['leaf_value'] = float(node['leaf_value'])
+            else:
+                new_node['best_feature'] = float(node['feature'])
+                new_node['split_bin'] = float(node['bin'])
+                new_node['left_id'] = node_counter[0]
+                walk(node['left'])
+                new_node['right_id'] = node_counter[0]
+                walk(node['right'])
 
-                    current_node_idx = node_idx[active_idx]
-                    f    = tree_features[current_node_idx]
-                    thr  = tree_thresh[current_node_idx]
-                    vals = tree_values[current_node_idx]
+            node_list.append(new_node)
+            return new_node
 
-                    mask_no_node = (f == -2)
-                    mask_leaf    = (f == -1)
-                    mask_internal = ~(mask_leaf | mask_no_node)
+        walk(tree)
 
-                    if np.any(mask_leaf):
-                        leaf_rows = active_idx[mask_leaf]
-                        chunk_preds[leaf_rows] += vals[mask_leaf]
-                        active[leaf_rows] = False
+        for node in node_list:
+            i = node['node_id']
+            if 'leaf_value' in node:
+                flat[i, 4] = 1.0
+                flat[i, 5] = node['leaf_value']
+            else:
+                flat[i, 0] = node['best_feature']
+                flat[i, 1] = node['split_bin']
+                flat[i, 2] = node['left_id']
+                flat[i, 3] = node['right_id']
+                flat[i, 4] = 0.0
 
-                    if np.any(mask_no_node):
-                        no_node_rows = active_idx[mask_no_node]
-                        active[no_node_rows] = False
-
-                    if np.any(mask_internal):
-                        internal_rows = active_idx[mask_internal]
-                        act_f   = f[mask_internal].astype(np.int32)
-                        act_thr = thr[mask_internal]
-                        binvals = chunk[internal_rows, act_f]
-                        go_left = binvals <= act_thr
-
-                        new_left_idx  = current_node_idx[mask_internal] * 2 + 1
-                        new_right_idx = current_node_idx[mask_internal] * 2 + 2
-                        node_idx[internal_rows[go_left]]  = new_left_idx[go_left]
-                        node_idx[internal_rows[~go_left]] = new_right_idx[~go_left]
-
-            out[start:end] = self.base_prediction + self.learning_rate * chunk_preds
-
-        return out
-
-    def flatten_forest(self, forest):
-        n_trees = len(forest)
-        max_nodes = 2 ** (self.max_depth + 1) - 1
-
-        feat_arr = np.full((n_trees, max_nodes), -2, dtype=np.int16)
-        thresh_arr = np.full((n_trees, max_nodes), -2, dtype=np.int16)
-        value_arr = np.zeros((n_trees, max_nodes), dtype=np.float32)
-
-        def fill_padded(tree, tree_idx, node_idx, depth):
-            if "leaf_value" in tree:
-                feat_arr[tree_idx, node_idx] = -1
-                thresh_arr[tree_idx, node_idx] = -1
-                value_arr[tree_idx, node_idx] = tree["leaf_value"]
-                return
-            feat = tree["feature"]
-            bin_th = tree["bin"]
-            feat_arr[tree_idx, node_idx] = feat
-            thresh_arr[tree_idx, node_idx] = bin_th
-
-            if depth < self.max_depth:
-                left_idx  = 2 * node_idx + 1
-                right_idx = 2 * node_idx + 2
-                fill_padded(tree["left"],  tree_idx, left_idx, depth + 1)
-                fill_padded(tree["right"], tree_idx, right_idx, depth + 1)
-
-        for t, root in enumerate(forest):
-            fill_padded(root, t, 0, 0)
-
-        return {
-            "features": feat_arr,
-            "thresholds": thresh_arr,
-            "leaf_values": value_arr,
-            "max_nodes": max_nodes
-        }
+        return flat
