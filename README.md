@@ -198,8 +198,7 @@ No installation required — just press **"Open in Playground"**, then **Run All
 
 ### Methods:
 - `.fit(X, y, era_id=None)`: Train the model. `X` can be raw floats or pre-binned `int8` data. `era_id` is optional and used internally.
-- `.predict(X, chunksize=50_000)`: Predict on new raw float or pre-binned data.
-- `.predict_numpy(X, chunksize=50_000)`: Same as `.predict(X)` but without using the GPU. 
+- `.predict(X)`: Predict on new data, using parallelized CUDA kernel.
 
 ---
 
