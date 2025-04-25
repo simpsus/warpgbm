@@ -107,12 +107,6 @@ void launch_histogram_kernel_cuda(
         N, F, B);
 }
 
-#define CHECK_CUDA(x) TORCH_CHECK(x.is_cuda(), #x " must be a CUDA tensor")
-#define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
-#define CHECK_INPUT(x) \
-    CHECK_CUDA(x);     \
-    CHECK_CONTIGUOUS(x)
-
 // CUDA kernel: tiled, 64-bit safe
 __global__ void histogram_tiled_kernel(
     const int8_t *__restrict__ bin_indices, // [N, F]
@@ -148,10 +142,6 @@ void launch_histogram_kernel_cuda_2(
     int threads_per_block = 256,
     int rows_per_thread = 1)
 {
-    CHECK_INPUT(bin_indices);
-    CHECK_INPUT(gradients);
-    CHECK_INPUT(grad_hist);
-    CHECK_INPUT(hess_hist);
 
     int64_t N = bin_indices.size(0);
     int64_t F = bin_indices.size(1);
@@ -233,10 +223,6 @@ void launch_histogram_kernel_cuda_configurable(
     int threads_per_block = 256,
     int rows_per_thread = 1)
 {
-    CHECK_INPUT(bin_indices);
-    CHECK_INPUT(gradients);
-    CHECK_INPUT(grad_hist);
-    CHECK_INPUT(hess_hist);
 
     int64_t N = bin_indices.size(0);
     int64_t F = bin_indices.size(1);
