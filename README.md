@@ -16,26 +16,20 @@ WarpGBM is a high-performance, GPU-accelerated Gradient Boosted Decision Tree (G
 
 ---
 
-## Performance Note
-
-In our initial tests on an NVIDIA 3090 (local) and A100 (Google Colab Pro), WarpGBM achieves **14x to 20x faster training times** compared to LightGBM's CPU version and **2x faster** on the GPU version using default configurations. Speed also outperforms XGBoost and CatBoost on regression problems. It also consumes **significantly less RAM and CPU**. These early results hint at more thorough benchmarking to come.
-
----
-
 ## Benchmarks
 
 ### Scikit-Learn Synthetic Data: 1 Million Rows and 1,000 Features
 
-In this benchmark we compare the speed and in-sample correlation of **WarpGBM v0.1.19** against LightGBM, XGBoost and CatBoost, all with their GPU-enabled versions. This benchmark runs on Google Colab with the L4 GPU environment. The CPU versions don't even come close to the speed here so we didn't test them.
+In this benchmark we compare the speed and in-sample correlation of **WarpGBM v0.1.21** against LightGBM, XGBoost and CatBoost, all with their GPU-enabled versions. This benchmark runs on Google Colab with the L4 GPU environment.
 
 ```
-   WarpGBM:   corr = 0.8882, train = 21.8s, infer = 11.6s 
-   XGBoost:   corr = 0.8877, train = 33.4s, infer = 8.1s
-  LightGBM:   corr = 0.8604, train = 30.2s, infer = 1.4s
-  CatBoost:   corr = 0.8935, train = 377.9s, infer = 375.8s
+   WarpGBM:   corr = 0.8882, train = 18.7s, infer = 4.9s
+   XGBoost:   corr = 0.8877, train = 33.1s, infer = 8.1s
+  LightGBM:   corr = 0.8604, train = 30.3s, infer = 1.4s
+  CatBoost:   corr = 0.8935, train = 400.0s, infer = 382.6s
 ```
 
-Colab Notebook: https://colab.research.google.com/drive/16U1kbYlD5HibGbnF5NGsjChZ1p1IA2pK
+Colab Notebook: https://colab.research.google.com/drive/16U1kbYlD5HibGbnF5NGsjChZ1p1IA2pK?usp=sharing
 
 ---
 
@@ -58,7 +52,7 @@ pip install warpgbm
 This installs from PyPI and also compiles CUDA code locally during installation. This method works well **if your environment already has PyTorch with GPU support** installed and configured.
 
 > **Tip:**\
-> If you encounter an error related to mismatched or missing CUDA versions, try installing with the following flag:
+> If you encounter an error related to mismatched or missing CUDA versions, try installing with the following flag. This is currently required in the Colab environments.
 >
 > ```bash
 > pip install warpgbm --no-build-isolation
