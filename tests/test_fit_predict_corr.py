@@ -29,7 +29,15 @@ def test_fit_predictpytee_correlation():
         )
 
         start_fit = time.time()
-        model.fit(X, y, era_id=era)
+        model.fit(
+            X,
+            y,
+            era_id=era,
+            X_eval=X,
+            y_eval=y,
+            eval_every_n_trees=10,
+            early_stopping_rounds=1,
+        )
         fit_time = time.time() - start_fit
         print(f"  Fit time:     {fit_time:.3f} seconds")
 

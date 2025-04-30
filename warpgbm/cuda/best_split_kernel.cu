@@ -38,7 +38,7 @@ __global__ void best_split_kernel_global_only(
 
         if (H_L >= min_child_samples && H_R >= min_child_samples)
         {
-            float gain = (G_L * G_L) / (H_L + eps) + (G_R * G_R) / (H_R + eps);
+            float gain = (G_L * G_L) / (H_L + eps) + (G_R * G_R) / (H_R + eps) - (G_total * G_total) / (H_total + eps);
             if (gain > best_gain)
             {
                 best_gain = gain;

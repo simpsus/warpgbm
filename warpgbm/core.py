@@ -70,6 +70,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         self.rows_per_thread = rows_per_thread
         self.L2_reg = L2_reg
         self.L1_reg = L1_reg
+        self.forest = [{} for _ in range(self.n_estimators)]
 
     def _validate_hyperparams(self, **kwargs):
         # Type checks
@@ -122,9 +123,95 @@ class WarpGBM(BaseEstimator, RegressorMixin):
                 f"Invalid histogram_computer: {kwargs['histogram_computer']}. Choose from {list(histogram_kernels.keys())}."
             )
 
-    def fit(self, X, y, era_id=None):
+    def validate_fit_params(
+        self, X, y, era_id, X_eval, y_eval, eval_every_n_trees, early_stopping_rounds
+    ):
+        # ─── Required: X and y ───
+        if not isinstance(X, np.ndarray) or not isinstance(y, np.ndarray):
+            raise TypeError("X and y must be numpy arrays.")
+        if X.ndim != 2:
+            raise ValueError(f"X must be 2-dimensional, got shape {X.shape}")
+        if y.ndim != 1:
+            raise ValueError(f"y must be 1-dimensional, got shape {y.shape}")
+        if X.shape[0] != y.shape[0]:
+            raise ValueError(
+                f"X and y must have the same number of rows. Got {X.shape[0]} and {y.shape[0]}."
+            )
+
+        # ─── Optional: era_id ───
+        if era_id is not None:
+            if not isinstance(era_id, np.ndarray):
+                raise TypeError("era_id must be a numpy array.")
+            if era_id.ndim != 1:
+                raise ValueError(
+                    f"era_id must be 1-dimensional, got shape {era_id.shape}"
+                )
+            if len(era_id) != len(y):
+                raise ValueError(
+                    f"era_id must have same length as y. Got {len(era_id)} and {len(y)}."
+                )
+
+        # ─── Optional: Eval Set ───
+        eval_args = [X_eval, y_eval, eval_every_n_trees]
+        if any(arg is not None for arg in eval_args):
+            # Require all of them
+            if X_eval is None or y_eval is None or eval_every_n_trees is None:
+                raise ValueError(
+                    "If using eval set, X_eval, y_eval, and eval_every_n_trees must all be defined."
+                )
+
+            if not isinstance(X_eval, np.ndarray) or not isinstance(y_eval, np.ndarray):
+                raise TypeError("X_eval and y_eval must be numpy arrays.")
+            if X_eval.ndim != 2:
+                raise ValueError(
+                    f"X_eval must be 2-dimensional, got shape {X_eval.shape}"
+                )
+            if y_eval.ndim != 1:
+                raise ValueError(
+                    f"y_eval must be 1-dimensional, got shape {y_eval.shape}"
+                )
+            if X_eval.shape[0] != y_eval.shape[0]:
+                raise ValueError(
+                    f"X_eval and y_eval must have same number of rows. Got {X_eval.shape[0]} and {y_eval.shape[0]}."
+                )
+
+            if not isinstance(eval_every_n_trees, int) or eval_every_n_trees <= 0:
+                raise ValueError(
+                    f"eval_every_n_trees must be a positive integer, got {eval_every_n_trees}."
+                )
+
+            if early_stopping_rounds is not None:
+                if (
+                    not isinstance(early_stopping_rounds, int)
+                    or early_stopping_rounds <= 0
+                ):
+                    raise ValueError(
+                        f"early_stopping_rounds must be a positive integer, got {early_stopping_rounds}."
+                    )
+            else:
+                # No early stopping = set to "never trigger"
+                early_stopping_rounds = self.n_estimators + 1
+
+        return early_stopping_rounds  # May have been defaulted here
+
+    def fit(
+        self,
+        X,
+        y,
+        era_id=None,
+        X_eval=None,
+        y_eval=None,
+        eval_every_n_trees=None,
+        early_stopping_rounds=None,
+    ):
+        early_stopping_rounds = self.validate_fit_params(
+            X, y, era_id, X_eval, y_eval, eval_every_n_trees, early_stopping_rounds
+        )
+
         if era_id is None:
             era_id = np.ones(X.shape[0], dtype="int32")
+
+        # Train data preprocessing
         self.bin_indices, era_indices, self.bin_edges, self.unique_eras, self.Y_gpu = (
             self.preprocess_gpu_data(X, y, era_id)
         )
@@ -137,8 +224,23 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         self.best_bins = torch.zeros(
             self.num_features, device=self.device, dtype=torch.int32
         )
+
+        # ─── Optional Eval Set ───
+        if X_eval is not None and y_eval is not None:
+            self.bin_indices_eval = self.bin_data_with_existing_edges(X_eval)
+            self.Y_gpu_eval = torch.from_numpy(y_eval).to(torch.float32).to(self.device)
+            self.eval_every_n_trees = eval_every_n_trees
+            self.early_stopping_rounds = early_stopping_rounds
+        else:
+            self.bin_indices_eval = None
+            self.Y_gpu_eval = None
+            self.eval_every_n_trees = None
+            self.early_stopping_rounds = None
+
+        # ─── Grow the forest ───
         with torch.no_grad():
-            self.forest = self.grow_forest()
+            self.grow_forest()
+
         return self
 
     def preprocess_gpu_data(self, X_np, Y_np, era_id_np):
@@ -292,11 +394,34 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             "right": right_child,
         }
 
-    def grow_forest(self):
-        forest = [{} for _ in range(self.n_estimators)]
-        self.training_loss = []
+    def compute_eval(self, i):
+        if self.eval_every_n_trees == None:
+            return
 
-        for i in tqdm(range(self.n_estimators)):
+        if i % self.eval_every_n_trees == 0:
+            eval_preds = self.predict_binned(self.bin_indices_eval)
+            eval_loss = ((self.Y_gpu_eval - eval_preds) ** 2).mean().item()
+            self.eval_loss.append(eval_loss)
+
+            train_loss = ((self.Y_gpu - self.gradients) ** 2).mean().item()
+            self.training_loss.append(train_loss)
+
+            if len(self.eval_loss) > self.early_stopping_rounds:
+                if self.eval_loss[-self.early_stopping_rounds] < self.eval_loss[-1]:
+                    self.stop = True
+
+            print(
+                f"🌲 Tree {i+1}/{self.n_estimators} | Train MSE: {train_loss:.6f} | Eval MSE: {eval_loss:.6f}"
+            )
+
+            del eval_preds, eval_loss, train_loss
+
+    def grow_forest(self):
+        self.training_loss = []
+        self.eval_loss = []  # <-- if eval set is given
+        self.stop = False
+
+        for i in range(self.n_estimators):
             self.residual = self.Y_gpu - self.gradients
 
             self.root_gradient_histogram, self.root_hessian_histogram = (
@@ -309,21 +434,21 @@ class WarpGBM(BaseEstimator, RegressorMixin):
                 self.root_node_indices,
                 depth=0,
             )
-            forest[i] = tree
-        # loss = ((self.Y_gpu - self.gradients) ** 2).mean().item()
-        # self.training_loss.append(loss)
-        # print(f"🌲 Tree {i+1}/{self.n_estimators} - MSE: {loss:.6f}")
+            self.forest[i] = tree
+
+            self.compute_eval(i)
+
+            if self.stop:
+                break
 
         print("Finished training forest.")
-        return forest
 
-    def predict(self, X_np):
+    def bin_data_with_existing_edges(self, X_np):
         X_tensor = torch.from_numpy(X_np).to(torch.float32).pin_memory()
         num_samples = X_tensor.size(0)
         bin_indices = torch.zeros(
             (num_samples, self.num_features), dtype=torch.int8, device=self.device
         )
-
         with torch.no_grad():
             for f in range(self.num_features):
                 X_f = X_tensor[:, f].to(self.device, non_blocking=True)
@@ -332,10 +457,16 @@ class WarpGBM(BaseEstimator, RegressorMixin):
                 node_kernel.custom_cuda_binner(X_f, bin_edges_f, bin_indices_f)
                 bin_indices[:, f] = bin_indices_f
 
+        return bin_indices
+
+    def predict_binned(self, bin_indices):
+        num_samples = bin_indices.size(0)
+
         tree_tensor = torch.stack(
             [
                 self.flatten_tree(tree, max_nodes=2 ** (self.max_depth + 1))
                 for tree in self.forest
+                if tree
             ]
         ).to(self.device)
 
@@ -344,6 +475,11 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             bin_indices.contiguous(), tree_tensor.contiguous(), self.learning_rate, out
         )
 
+        return out
+
+    def predict(self, X_np):
+        bin_indices = self.bin_data_with_existing_edges(X_np)
+        out = self.predict_binned(bin_indices)
         return out.cpu().numpy()
 
     def flatten_tree(self, tree, max_nodes):
