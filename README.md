@@ -191,8 +191,26 @@ No installation required — just press **"Open in Playground"**, then **Run All
 - `L2_reg`: L2 regularizer (default: 1e-6)
 
 ### Methods:
-- `.fit(X, y, era_id=None)`: Train the model. `X` can be raw floats or pre-binned `int8` data. `era_id` is optional and used internally.
-- `.predict(X)`: Predict on new data, using parallelized CUDA kernel.
+```
+.fit(
+   X,                             # numpy array (float or int) 2 dimensions (num_samples, num_features)
+   y,                             # numpy array (float or int) 1 dimension (num_samples)
+   era_id=None,                   # numpy array (int) 1 dimension (num_samples)
+   X_eval=None,                   # numpy array (float or int) 2 dimensions (eval_num_samples, num_features) 
+   y_eval=None,                   # numpy array (float or int) 1 dimension (eval_num_samples)
+   eval_every_n_trees=None,       # const (int) >= 1 
+   early_stopping_rounds=None,    # const (int) >= 1
+)
+```
+Train with optional validation set and early stopping.
+
+
+```
+.predict(
+   X                              # numpy array (float or int) 2 dimensions (predict_num_samples, num_features)
+)
+```
+Predict on new data, using parallelized CUDA kernel.
 
 ---
 
@@ -207,4 +225,8 @@ WarpGBM builds on the shoulders of PyTorch, scikit-learn, LightGBM, and the CUDA
 ### v0.1.21
 
 - Vectorized predict function replaced with CUDA kernel (`warpgbm/cuda/predict.cu`), parallelizing per sample, per tree.
+
+### v0.1.23
+
+- Adjust gain in split kernel and added support for an eval set with early stopping based on MSE.
 
