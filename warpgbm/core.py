@@ -512,6 +512,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
 
             chunk_preds = self.predict_binned(bin_indices).cpu().numpy()
             preds.append(chunk_preds)
+            del bin_indices
 
         return np.concatenate(preds)
 
