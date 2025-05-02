@@ -241,6 +241,9 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         with torch.no_grad():
             self.grow_forest()
 
+        del self.bin_indices
+        del self.Y_gpu
+
         return self
 
     def preprocess_gpu_data(self, X_np, Y_np, era_id_np):
@@ -444,7 +447,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         print("Finished training forest.")
 
     def bin_data_with_existing_edges(self, X_np):
-        X_tensor = torch.from_numpy(X_np).to(torch.float32).pin_memory()
+        X_tensor = torch.from_numpy(X_np).pin_memory()
         num_samples = X_tensor.size(0)
         bin_indices = torch.zeros(
             (num_samples, self.num_features), dtype=torch.int8, device=self.device
@@ -477,10 +480,40 @@ class WarpGBM(BaseEstimator, RegressorMixin):
 
         return out
 
-    def predict(self, X_np):
-        bin_indices = self.bin_data_with_existing_edges(X_np)
-        out = self.predict_binned(bin_indices)
-        return out.cpu().numpy()
+    def predict(self, X_np, chunk_size=100000):
+        num_samples = X_np.shape[0]
+        is_integer_type = np.issubdtype(X_np.dtype, np.integer)
+
+        if is_integer_type and X_np.shape[1] == self.num_features:
+            max_vals = X_np.max(axis=0)
+            if np.all(max_vals < self.num_bins):
+                print("Detected pre-binned input at predict-time — skipping binning.")
+                is_prebinned = True
+            else:
+                is_prebinned = False
+        else:
+            is_prebinned = False
+
+        preds = []
+
+        for start in range(0, num_samples, chunk_size):
+            end = min(start + chunk_size, num_samples)
+            X_chunk = X_np[start:end]
+
+            if is_prebinned:
+                bin_indices = (
+                    torch.from_numpy(X_chunk)
+                    .to(self.device)
+                    .contiguous()
+                    .to(torch.int8)
+                )
+            else:
+                bin_indices = self.bin_data_with_existing_edges(X_chunk)
+
+            chunk_preds = self.predict_binned(bin_indices).cpu().numpy()
+            preds.append(chunk_preds)
+
+        return np.concatenate(preds)
 
     def flatten_tree(self, tree, max_nodes):
         """
