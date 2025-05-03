@@ -5,6 +5,7 @@ from warpgbm.cuda import node_kernel
 from tqdm import tqdm
 from typing import Tuple
 from torch import Tensor
+import gc
 
 histogram_kernels = {
     "hist1": node_kernel.compute_histogram,
@@ -237,6 +238,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         self.best_bins = torch.zeros(
             self.num_features, device=self.device, dtype=torch.int32
         )
+        self.feature_indices = torch.arange(self.num_features, device=self.device)
 
         # ─── Optional Eval Set ───
         if X_eval is not None and y_eval is not None:
@@ -256,6 +258,8 @@ class WarpGBM(BaseEstimator, RegressorMixin):
 
         del self.bin_indices
         del self.Y_gpu
+
+        gc.collect()
 
         return self
 
@@ -359,15 +363,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
 
         return f, b
 
-    def grow_tree(
-        self,
-        gradient_histogram,
-        hessian_histogram,
-        node_indices,
-        depth,
-        feat_idx,
-        local_bin_indices,
-    ):
+    def grow_tree(self, gradient_histogram, hessian_histogram, node_indices, depth):
         if depth == self.max_depth:
             leaf_value = self.residual[node_indices].mean()
             self.gradients[node_indices] += self.learning_rate * leaf_value
@@ -383,7 +379,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             self.gradients[node_indices] += self.learning_rate * leaf_value
             return {"leaf_value": leaf_value.item(), "samples": parent_size}
 
-        split_mask = local_bin_indices[node_indices, local_feature] <= best_bin
+        split_mask = self.bin_indices_tree[node_indices, local_feature] <= best_bin
         left_indices = node_indices[split_mask]
         right_indices = node_indices[~split_mask]
 
@@ -392,37 +388,27 @@ class WarpGBM(BaseEstimator, RegressorMixin):
 
         if left_size <= right_size:
             grad_hist_left, hess_hist_left = self.compute_histograms(
-                local_bin_indices[left_indices], self.residual[left_indices]
+                self.bin_indices_tree[left_indices], self.residual[left_indices]
             )
             grad_hist_right = gradient_histogram - grad_hist_left
             hess_hist_right = hessian_histogram - hess_hist_left
         else:
             grad_hist_right, hess_hist_right = self.compute_histograms(
-                local_bin_indices[right_indices], self.residual[right_indices]
+                self.bin_indices_tree[right_indices], self.residual[right_indices]
             )
             grad_hist_left = gradient_histogram - grad_hist_right
             hess_hist_left = hessian_histogram - hess_hist_right
 
         new_depth = depth + 1
         left_child = self.grow_tree(
-            grad_hist_left,
-            hess_hist_left,
-            left_indices,
-            new_depth,
-            feat_idx,
-            local_bin_indices,
+            grad_hist_left, hess_hist_left, left_indices, new_depth
         )
         right_child = self.grow_tree(
-            grad_hist_right,
-            hess_hist_right,
-            right_indices,
-            new_depth,
-            feat_idx,
-            local_bin_indices,
+            grad_hist_right, hess_hist_right, right_indices, new_depth
         )
 
         return {
-            "feature": feat_idx[local_feature],
+            "feature": self.feat_indices_tree[local_feature],
             "bin": best_bin,
             "left": left_child,
             "right": right_child,
@@ -455,23 +441,23 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         self.eval_loss = []  # if eval set is given
         self.stop = False
 
-        # Precompute full list of features
-        self.feature_indices = torch.arange(self.num_features, device=self.device)
         if self.colsample_bytree < 1.0:
             k = max(1, int(self.colsample_bytree * self.num_features))
         else:
-            feat_idx = self.feature_indices
-            bin_subset = self.bin_indices
+            self.feat_indices_tree = self.feature_indices
+            self.bin_indices_tree = self.bin_indices
 
         for i in range(self.n_estimators):
             self.residual = self.Y_gpu - self.gradients
 
             if self.colsample_bytree < 1.0:
-                feat_idx = torch.randperm(self.num_features, device=self.device)[:k]
-                bin_subset = self.bin_indices[:, feat_idx]
+                self.feat_indices_tree = torch.randperm(
+                    self.num_features, device=self.device
+                )[:k]
+                self.bin_indices_tree = self.bin_indices[:, self.feat_indices_tree]
 
             self.root_gradient_histogram, self.root_hessian_histogram = (
-                self.compute_histograms(bin_subset, self.residual)
+                self.compute_histograms(self.bin_indices_tree, self.residual)
             )
 
             tree = self.grow_tree(
@@ -479,8 +465,6 @@ class WarpGBM(BaseEstimator, RegressorMixin):
                 self.root_hessian_histogram,
                 self.root_node_indices,
                 0,
-                feat_idx,
-                bin_subset,
             )
             self.forest[i] = tree
 
@@ -489,10 +473,10 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             if self.stop:
                 break
 
-    print("Finished training forest.")
+        print("Finished training forest.")
 
     def bin_data_with_existing_edges(self, X_np):
-        X_tensor = torch.from_numpy(X_np).pin_memory()
+        X_tensor = torch.from_numpy(X_np).type(torch.float32).pin_memory()
         num_samples = X_tensor.size(0)
         bin_indices = torch.zeros(
             (num_samples, self.num_features), dtype=torch.int8, device=self.device
@@ -525,8 +509,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
 
         return out
 
-    def predict(self, X_np, chunk_size=200000):
-        num_samples = X_np.shape[0]
+    def predict(self, X_np):
         is_integer_type = np.issubdtype(X_np.dtype, np.integer)
 
         if is_integer_type and X_np.shape[1] == self.num_features:
@@ -539,44 +522,18 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         else:
             is_prebinned = False
 
-        preds = []
+        if is_prebinned:
+            bin_indices = (
+                torch.from_numpy(X_np).to(self.device).contiguous().to(torch.int8)
+            )
+        else:
+            bin_indices = self.bin_data_with_existing_edges(X_np)
 
-        for start in range(0, num_samples, chunk_size):
-            end = min(start + chunk_size, num_samples)
-            X_chunk = X_np[start:end]
-
-            if is_prebinned:
-                bin_indices = (
-                    torch.from_numpy(X_chunk)
-                    .to(self.device)
-                    .contiguous()
-                    .to(torch.int8)
-                )
-            else:
-                bin_indices = self.bin_data_with_existing_edges(X_chunk)
-
-            chunk_preds = self.predict_binned(bin_indices).cpu().numpy()
-            preds.append(chunk_preds)
-            del bin_indices
-
-        return np.concatenate(preds)
+        preds = self.predict_binned(bin_indices).cpu().numpy()
+        del bin_indices
+        return preds
 
     def flatten_tree(self, tree, max_nodes):
-        """
-        Convert a recursive tree structure into a flat matrix format.
-
-        Each row in the output represents a node:
-        - Columns: [feature, bin, left_id, right_id, is_leaf, value]
-        - Internal nodes fill columns 0–3 and set is_leaf = 0
-        - Leaf nodes fill only value and set is_leaf = 1
-
-        Args:
-            tree (list): A list containing a single root node (recursive dict form).
-            max_nodes (int): Max number of nodes to allocate in the flat matrix.
-
-        Returns:
-            torch.Tensor: [max_nodes x 6] matrix representing the flattened tree.
-        """
         flat = torch.full((max_nodes, 6), float("nan"), dtype=torch.float32)
         node_counter = [0]
         node_list = []
