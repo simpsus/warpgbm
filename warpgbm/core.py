@@ -29,6 +29,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         L2_reg=1e-6,
         L1_reg=0.0,
         device="cuda",
+        colsample_bytree=1.0,
     ):
         # Validate arguments
         self._validate_hyperparams(
@@ -43,6 +44,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             rows_per_thread=rows_per_thread,
             L2_reg=L2_reg,
             L1_reg=L1_reg,
+            colsample_bytree=colsample_bytree,
         )
 
         self.num_bins = num_bins
@@ -71,6 +73,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         self.L2_reg = L2_reg
         self.L1_reg = L1_reg
         self.forest = [{} for _ in range(self.n_estimators)]
+        self.colsample_bytree = colsample_bytree
 
     def _validate_hyperparams(self, **kwargs):
         # Type checks
@@ -82,7 +85,13 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             "threads_per_block",
             "rows_per_thread",
         ]
-        float_params = ["learning_rate", "min_split_gain", "L2_reg", "L1_reg"]
+        float_params = [
+            "learning_rate",
+            "min_split_gain",
+            "L2_reg",
+            "L1_reg",
+            "colsample_bytree",
+        ]
 
         for param in int_params:
             if not isinstance(kwargs[param], int):
@@ -121,6 +130,10 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         if kwargs["histogram_computer"] not in histogram_kernels:
             raise ValueError(
                 f"Invalid histogram_computer: {kwargs['histogram_computer']}. Choose from {list(histogram_kernels.keys())}."
+            )
+        if kwargs["colsample_bytree"] <= 0 or kwargs["colsample_bytree"] > 1:
+            raise ValueError(
+                f"Invalid colsample_bytree: {kwargs['colsample_bytree']}. Must be a float value > 0 and <= 1."
             )
 
     def validate_fit_params(
@@ -346,23 +359,31 @@ class WarpGBM(BaseEstimator, RegressorMixin):
 
         return f, b
 
-    def grow_tree(self, gradient_histogram, hessian_histogram, node_indices, depth):
+    def grow_tree(
+        self,
+        gradient_histogram,
+        hessian_histogram,
+        node_indices,
+        depth,
+        feat_idx,
+        local_bin_indices,
+    ):
         if depth == self.max_depth:
             leaf_value = self.residual[node_indices].mean()
             self.gradients[node_indices] += self.learning_rate * leaf_value
             return {"leaf_value": leaf_value.item(), "samples": node_indices.numel()}
 
         parent_size = node_indices.numel()
-        best_feature, best_bin = self.find_best_split(
+        local_feature, best_bin = self.find_best_split(
             gradient_histogram, hessian_histogram
         )
 
-        if best_feature == -1:
+        if local_feature == -1:
             leaf_value = self.residual[node_indices].mean()
             self.gradients[node_indices] += self.learning_rate * leaf_value
             return {"leaf_value": leaf_value.item(), "samples": parent_size}
 
-        split_mask = self.bin_indices[node_indices, best_feature] <= best_bin
+        split_mask = local_bin_indices[node_indices, local_feature] <= best_bin
         left_indices = node_indices[split_mask]
         right_indices = node_indices[~split_mask]
 
@@ -371,27 +392,37 @@ class WarpGBM(BaseEstimator, RegressorMixin):
 
         if left_size <= right_size:
             grad_hist_left, hess_hist_left = self.compute_histograms(
-                self.bin_indices[left_indices], self.residual[left_indices]
+                local_bin_indices[left_indices], self.residual[left_indices]
             )
             grad_hist_right = gradient_histogram - grad_hist_left
             hess_hist_right = hessian_histogram - hess_hist_left
         else:
             grad_hist_right, hess_hist_right = self.compute_histograms(
-                self.bin_indices[right_indices], self.residual[right_indices]
+                local_bin_indices[right_indices], self.residual[right_indices]
             )
             grad_hist_left = gradient_histogram - grad_hist_right
             hess_hist_left = hessian_histogram - hess_hist_right
 
         new_depth = depth + 1
         left_child = self.grow_tree(
-            grad_hist_left, hess_hist_left, left_indices, new_depth
+            grad_hist_left,
+            hess_hist_left,
+            left_indices,
+            new_depth,
+            feat_idx,
+            local_bin_indices,
         )
         right_child = self.grow_tree(
-            grad_hist_right, hess_hist_right, right_indices, new_depth
+            grad_hist_right,
+            hess_hist_right,
+            right_indices,
+            new_depth,
+            feat_idx,
+            local_bin_indices,
         )
 
         return {
-            "feature": best_feature,
+            "feature": feat_idx[local_feature],
             "bin": best_bin,
             "left": left_child,
             "right": right_child,
@@ -421,21 +452,35 @@ class WarpGBM(BaseEstimator, RegressorMixin):
 
     def grow_forest(self):
         self.training_loss = []
-        self.eval_loss = []  # <-- if eval set is given
+        self.eval_loss = []  # if eval set is given
         self.stop = False
+
+        # Precompute full list of features
+        self.feature_indices = torch.arange(self.num_features, device=self.device)
+        if self.colsample_bytree < 1.0:
+            k = max(1, int(self.colsample_bytree * self.num_features))
+        else:
+            feat_idx = self.feature_indices
+            bin_subset = self.bin_indices
 
         for i in range(self.n_estimators):
             self.residual = self.Y_gpu - self.gradients
 
+            if self.colsample_bytree < 1.0:
+                feat_idx = torch.randperm(self.num_features, device=self.device)[:k]
+                bin_subset = self.bin_indices[:, feat_idx]
+
             self.root_gradient_histogram, self.root_hessian_histogram = (
-                self.compute_histograms(self.bin_indices, self.residual)
+                self.compute_histograms(bin_subset, self.residual)
             )
 
             tree = self.grow_tree(
                 self.root_gradient_histogram,
                 self.root_hessian_histogram,
                 self.root_node_indices,
-                depth=0,
+                0,
+                feat_idx,
+                bin_subset,
             )
             self.forest[i] = tree
 
@@ -444,7 +489,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             if self.stop:
                 break
 
-        print("Finished training forest.")
+    print("Finished training forest.")
 
     def bin_data_with_existing_edges(self, X_np):
         X_tensor = torch.from_numpy(X_np).pin_memory()
@@ -480,7 +525,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
 
         return out
 
-    def predict(self, X_np, chunk_size=100000):
+    def predict(self, X_np, chunk_size=200000):
         num_samples = X_np.shape[0]
         is_integer_type = np.issubdtype(X_np.dtype, np.integer)
 
