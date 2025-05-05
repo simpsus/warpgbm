@@ -189,6 +189,7 @@ No installation required — just press **"Open in Playground"**, then **Run All
 - `threads_per_block`: CUDA threads per block (default: 32)
 - `rows_per_thread`: Number of training rows processed per thread (default: 4)
 - `L2_reg`: L2 regularizer (default: 1e-6)
+- `colsample_bytree`: Proportion of features to subsample to grow each tree (default: 1)
 
 ### Methods:
 ```
@@ -230,3 +231,6 @@ WarpGBM builds on the shoulders of PyTorch, scikit-learn, LightGBM, and the CUDA
 
 - Adjust gain in split kernel and added support for an eval set with early stopping based on MSE.
 
+### v0.1.25
+
+- Added `colsample_bytree` parameter and new test using Numerai data.
