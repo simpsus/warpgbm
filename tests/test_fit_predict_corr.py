@@ -37,6 +37,7 @@ def test_fit_predictpytee_correlation():
             y_eval=y,
             eval_every_n_trees=10,
             early_stopping_rounds=1,
+            eval_metric="corr",
         )
         fit_time = time.time() - start_fit
         print(f"  Fit time:     {fit_time:.3f} seconds")
