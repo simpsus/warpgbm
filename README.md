@@ -201,6 +201,7 @@ No installation required — just press **"Open in Playground"**, then **Run All
    y_eval=None,                   # numpy array (float or int) 1 dimension (eval_num_samples)
    eval_every_n_trees=None,       # const (int) >= 1 
    early_stopping_rounds=None,    # const (int) >= 1
+   eval_metric='mse'              # string, one of 'mse' or 'corr'. For corr, loss is 1 - correlation(y_true, preds)
 )
 ```
 Train with optional validation set and early stopping.
@@ -234,3 +235,7 @@ WarpGBM builds on the shoulders of PyTorch, scikit-learn, LightGBM, and the CUDA
 ### v0.1.25
 
 - Added `colsample_bytree` parameter and new test using Numerai data.
+
+### v0.1.26
+
+- Fix Memory bugs in prediction and colsample bytree logic. Added "corr" eval metric. 
