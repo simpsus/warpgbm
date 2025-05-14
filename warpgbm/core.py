@@ -237,14 +237,16 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         )
         self.num_samples, self.num_features = X.shape
         self.gradients = torch.zeros_like(self.Y_gpu)
-        self.root_node_indices = torch.arange(self.num_samples, device=self.device)
+        self.root_node_indices = torch.arange(self.num_samples, device=self.device, dtype=torch.int32)
         self.base_prediction = self.Y_gpu.mean().item()
         self.gradients += self.base_prediction
-        self.best_gains = torch.zeros(self.num_features, device=self.device)
-        self.best_bins = torch.zeros(
-            self.num_features, device=self.device, dtype=torch.int32
-        )
-        self.feature_indices = torch.arange(self.num_features, device=self.device)
+        if self.colsample_bytree < 1.0:
+            k = max(1, int(self.colsample_bytree * self.num_features))
+        else:
+            k = self.num_features
+        self.best_gains = torch.zeros(k, device=self.device)
+        self.best_bins = torch.zeros(k, device=self.device, dtype=torch.int32)
+        self.feature_indices = torch.arange(self.num_features, device=self.device, dtype=torch.int32)
 
         # ─── Optional Eval Set ───
         if X_eval is not None and y_eval is not None:
@@ -273,50 +275,47 @@ class WarpGBM(BaseEstimator, RegressorMixin):
     def preprocess_gpu_data(self, X_np, Y_np, era_id_np):
         with torch.no_grad():
             self.num_samples, self.num_features = X_np.shape
-            Y_gpu = torch.from_numpy(Y_np).type(torch.float32).to(self.device)
-            era_id_gpu = torch.from_numpy(era_id_np).type(torch.int32).to(self.device)
-            is_integer_type = np.issubdtype(X_np.dtype, np.integer)
-            if is_integer_type:
-                max_vals = X_np.max(axis=0)
-                if np.all(max_vals < self.num_bins):
-                    print(
-                        "Detected pre-binned integer input — skipping quantile binning."
-                    )
-                    bin_indices = (
-                        torch.from_numpy(X_np)
-                        .to(self.device)
-                        .contiguous()
-                        .to(torch.int8)
-                    )
 
-                    # We'll store None or an empty tensor in self.bin_edges
-                    # to indicate that we skip binning at predict-time
-                    bin_edges = torch.arange(
-                        1, self.num_bins, dtype=torch.float32
-                    ).repeat(self.num_features, 1)
-                    bin_edges = bin_edges.to(self.device)
-                    unique_eras, era_indices = torch.unique(
-                        era_id_gpu, return_inverse=True
-                    )
-                    return bin_indices, era_indices, bin_edges, unique_eras, Y_gpu
-                else:
-                    print(
-                        "Integer input detected, but values exceed num_bins — falling back to quantile binning."
-                    )
+            Y_gpu = torch.from_numpy(Y_np).type(torch.float32).to(self.device)
+
+            era_id_gpu = torch.from_numpy(era_id_np).type(torch.int32).to(self.device)
 
             bin_indices = torch.empty(
                 (self.num_samples, self.num_features), dtype=torch.int8, device="cuda"
             )
+
+            is_integer_type = np.issubdtype(X_np.dtype, np.integer)
+            max_vals = X_np.max(axis=0)
+
+            if is_integer_type and np.all(max_vals < self.num_bins):
+                print(
+                    "Detected pre-binned integer input — skipping quantile binning."
+                )
+                for f in range(self.num_features):
+                    bin_indices[:,f] = torch.as_tensor( X_np[:, f], device=self.device).contiguous()
+                # bin_indices = X_np.to("cuda", non_blocking=True).contiguous()
+
+                # We'll store None or an empty tensor in self.bin_edges
+                # to indicate that we skip binning at predict-time
+                bin_edges = torch.arange(
+                    1, self.num_bins, dtype=torch.float32
+                ).repeat(self.num_features, 1)
+                bin_edges = bin_edges.to(self.device)
+                unique_eras, era_indices = torch.unique(
+                    era_id_gpu, return_inverse=True
+                )
+                return bin_indices, era_indices, bin_edges, unique_eras, Y_gpu
+            
+            print("quantile binning.")
+
             bin_edges = torch.empty(
                 (self.num_features, self.num_bins - 1),
                 dtype=torch.float32,
                 device="cuda",
             )
 
-            X_np = torch.from_numpy(X_np).to(torch.float32).pin_memory()
-
             for f in range(self.num_features):
-                X_f = X_np[:, f].to("cuda", non_blocking=True)
+                X_f = torch.as_tensor( X_np[:, f], device=self.device, dtype=torch.float32 ).contiguous()
                 quantiles = torch.linspace(
                     0, 1, self.num_bins + 1, device="cuda", dtype=X_f.dtype
                 )[1:-1]
@@ -331,17 +330,19 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             unique_eras, era_indices = torch.unique(era_id_gpu, return_inverse=True)
             return bin_indices, era_indices, bin_edges, unique_eras, Y_gpu
 
-    def compute_histograms(self, bin_indices_sub, gradients):
+    def compute_histograms(self, sample_indices, feature_indices):
         grad_hist = torch.zeros(
-            (self.num_features, self.num_bins), device=self.device, dtype=torch.float32
+            (len(feature_indices), self.num_bins), device=self.device, dtype=torch.float32
         )
         hess_hist = torch.zeros(
-            (self.num_features, self.num_bins), device=self.device, dtype=torch.float32
+            (len(feature_indices), self.num_bins), device=self.device, dtype=torch.float32
         )
 
         self.compute_histogram(
-            bin_indices_sub,
-            gradients,
+            self.bin_indices,
+            self.residual,
+            sample_indices,
+            feature_indices,
             grad_hist,
             hess_hist,
             self.num_bins,
@@ -364,6 +365,9 @@ class WarpGBM(BaseEstimator, RegressorMixin):
 
         if torch.all(self.best_bins == -1):
             return -1, -1  # No valid split found
+        
+        # print(self.best_bins)
+        # print(self.best_gains)
 
         f = torch.argmax(self.best_gains).item()
         b = self.best_bins[f].item()
@@ -381,30 +385,38 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             gradient_histogram, hessian_histogram
         )
 
+        # print(local_feature, best_bin)
+
         if local_feature == -1:
             leaf_value = self.residual[node_indices].mean()
             self.gradients[node_indices] += self.learning_rate * leaf_value
             return {"leaf_value": leaf_value.item(), "samples": parent_size}
-
+        
+        # print("DEBUG SHAPES -> bin_indices:", self.bin_indices.shape,
+        #     "| node_indices max:", node_indices.max().item(),
+        #     "| local_feature:", local_feature,
+        #     "| feat_indices_tree len:", len(self.feat_indices_tree),
+        #     "| feat index:", self.feat_indices_tree[local_feature])
+        
         split_mask = self.bin_indices[node_indices, self.feat_indices_tree[local_feature]] <= best_bin
         left_indices = node_indices[split_mask]
         right_indices = node_indices[~split_mask]
+
+        # print("DEBUG SHAPES -> left_indices:", left_indices.shape,
+        #       "| right_indices:", right_indices.shape,
+        #       "| parent_size:", parent_size,
+        #       "| local_feature:", local_feature,
+        #       "| best_bin:", best_bin)
 
         left_size = left_indices.numel()
         right_size = right_indices.numel()
 
         if left_size <= right_size:
-            grad_hist_left, hess_hist_left = self.compute_histograms(
-                self.bin_indices.index_select(0, left_indices).index_select(1, self.feat_indices_tree)
-, self.residual[left_indices]
-            )
+            grad_hist_left, hess_hist_left = self.compute_histograms( left_indices, self.feat_indices_tree )
             grad_hist_right = gradient_histogram - grad_hist_left
             hess_hist_right = hessian_histogram - hess_hist_left
         else:
-            grad_hist_right, hess_hist_right = self.compute_histograms(
-                self.bin_indices.index_select(0, right_indices).index_select(1, self.feat_indices_tree)
-, self.residual[right_indices]
-            )
+            grad_hist_right, hess_hist_right = self.compute_histograms( right_indices, self.feat_indices_tree )
             grad_hist_left = gradient_histogram - grad_hist_right
             hess_hist_left = hessian_histogram - hess_hist_right
 
@@ -467,13 +479,9 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             self.residual = self.Y_gpu - self.gradients
 
             if self.colsample_bytree < 1.0:
-                self.feat_indices_tree = torch.randperm(
-                    self.num_features, device=self.device
-                )[:k]
+                self.feat_indices_tree = torch.randperm(self.num_features, device=self.device, dtype=torch.int32)[:k]
 
-            self.root_gradient_histogram, self.root_hessian_histogram = (
-                self.compute_histograms(self.bin_indices[:, self.feat_indices_tree], self.residual)
-            )
+            self.root_gradient_histogram, self.root_hessian_histogram = self.compute_histograms( self.root_node_indices, self.feat_indices_tree )
 
             tree = self.grow_tree(
                 self.root_gradient_histogram,

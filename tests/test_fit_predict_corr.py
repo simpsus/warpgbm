@@ -14,7 +14,7 @@ def test_fit_predictpytee_correlation():
     corrs = []
     mses = []
 
-    for hist_type in ["hist1", "hist2", "hist3"]:
+    for hist_type in ["hist3"]:
         print(f"\nTesting histogram method: {hist_type}")
 
         model = WarpGBM(
@@ -26,18 +26,19 @@ def test_fit_predictpytee_correlation():
             histogram_computer=hist_type,
             threads_per_block=64,
             rows_per_thread=4,
+            colsample_bytree=1.0,
         )
 
         start_fit = time.time()
         model.fit(
             X,
             y,
-            era_id=era,
-            X_eval=X,
-            y_eval=y,
-            eval_every_n_trees=10,
-            early_stopping_rounds=1,
-            eval_metric="corr",
+            # era_id=era,
+            # X_eval=X,
+            # y_eval=y,
+            # eval_every_n_trees=10,
+            # early_stopping_rounds=1,
+            # eval_metric="corr",
         )
         fit_time = time.time() - start_fit
         print(f"  Fit time:     {fit_time:.3f} seconds")

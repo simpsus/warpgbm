@@ -32,7 +32,9 @@ void launch_best_split_kernel_cuda(
 
 void launch_histogram_kernel_cuda_configurable(
     const at::Tensor &bin_indices,
-    const at::Tensor &gradients,
+    const at::Tensor &residual,
+    const at::Tensor &sample_indices,
+    const at::Tensor &feature_indices,
     at::Tensor &grad_hist,
     at::Tensor &hess_hist,
     int num_bins,
