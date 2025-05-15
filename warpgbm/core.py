@@ -1,18 +1,13 @@
 import torch
 import numpy as np
 from sklearn.base import BaseEstimator, RegressorMixin
+from sklearn.metrics import mean_squared_log_error
 from warpgbm.cuda import node_kernel
+from warpgbm.metrics import rmsle_torch
 from tqdm import tqdm
 from typing import Tuple
 from torch import Tensor
 import gc
-
-histogram_kernels = {
-    "hist1": node_kernel.compute_histogram,
-    "hist2": node_kernel.compute_histogram2,
-    "hist3": node_kernel.compute_histogram3,
-}
-
 
 class WarpGBM(BaseEstimator, RegressorMixin):
     def __init__(
@@ -23,8 +18,6 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         n_estimators=100,
         min_child_weight=20,
         min_split_gain=0.0,
-        verbosity=True,
-        histogram_computer="hist3",
         threads_per_block=64,
         rows_per_thread=4,
         L2_reg=1e-6,
@@ -40,7 +33,6 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             n_estimators=n_estimators,
             min_child_weight=min_child_weight,
             min_split_gain=min_split_gain,
-            histogram_computer=histogram_computer,
             threads_per_block=threads_per_block,
             rows_per_thread=rows_per_thread,
             L2_reg=L2_reg,
@@ -68,7 +60,6 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         self.min_child_weight = min_child_weight
         self.min_split_gain = min_split_gain
         self.best_bin = torch.tensor([-1], dtype=torch.int32, device=self.device)
-        self.compute_histogram = histogram_kernels[histogram_computer]
         self.threads_per_block = threads_per_block
         self.rows_per_thread = rows_per_thread
         self.L2_reg = L2_reg
@@ -128,10 +119,6 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             )
         if kwargs["L2_reg"] < 0 or kwargs["L1_reg"] < 0:
             raise ValueError("L2_reg and L1_reg must be non-negative.")
-        if kwargs["histogram_computer"] not in histogram_kernels:
-            raise ValueError(
-                f"Invalid histogram_computer: {kwargs['histogram_computer']}. Choose from {list(histogram_kernels.keys())}."
-            )
         if kwargs["colsample_bytree"] <= 0 or kwargs["colsample_bytree"] > 1:
             raise ValueError(
                 f"Invalid colsample_bytree: {kwargs['colsample_bytree']}. Must be a float value > 0 and <= 1."
@@ -206,9 +193,9 @@ class WarpGBM(BaseEstimator, RegressorMixin):
                 # No early stopping = set to "never trigger"
                 early_stopping_rounds = self.n_estimators + 1
 
-            if eval_metric not in ["mse", "corr"]:
+            if eval_metric not in ["mse", "corr", "rmsle"]:
                 raise ValueError(
-                    f"Invalid eval_metric: {eval_metric}. Choose 'mse' or 'corr'."
+                    f"Invalid eval_metric: {eval_metric}. Choose 'mse' or 'corr', 'rmsle'."
                 )
 
         return early_stopping_rounds  # May have been defaulted here
@@ -338,7 +325,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             (len(feature_indices), self.num_bins), device=self.device, dtype=torch.float32
         )
 
-        self.compute_histogram(
+        node_kernel.compute_histogram3(
             self.bin_indices,
             self.residual,
             sample_indices,
@@ -440,6 +427,8 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             return ((y_true - y_pred) ** 2).mean().item()
         elif self.eval_metric == "corr":
             return 1 - torch.corrcoef(torch.vstack([y_true, y_pred]))[0, 1].item()
+        elif self.eval_metric == "rmsle":
+            return rmsle_torch(y_true, y_pred).item()
         else:
             raise ValueError(f"Invalid eval_metric: {self.eval_metric}.")
 
@@ -499,14 +488,13 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         print("Finished training forest.")
 
     def bin_data_with_existing_edges(self, X_np):
-        X_tensor = torch.from_numpy(X_np).type(torch.float32).pin_memory()
-        num_samples = X_tensor.size(0)
+        num_samples = X_np.shape[0]
         bin_indices = torch.zeros(
             (num_samples, self.num_features), dtype=torch.int8, device=self.device
         )
         with torch.no_grad():
             for f in range(self.num_features):
-                X_f = X_tensor[:, f].to(self.device, non_blocking=True)
+                X_f = torch.as_tensor( X_np[:, f], device=self.device, dtype=torch.float32 ).contiguous()
                 bin_edges_f = self.bin_edges[f]
                 bin_indices_f = bin_indices[:, f].contiguous()
                 node_kernel.custom_cuda_binner(X_f, bin_edges_f, bin_indices_f)
@@ -545,9 +533,11 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             is_prebinned = False
 
         if is_prebinned:
-            bin_indices = (
-                torch.from_numpy(X_np).to(self.device).contiguous().to(torch.int8)
+            bin_indices = torch.empty(
+                X_np.shape, dtype=torch.int8, device="cuda"
             )
+            for f in range(self.num_features):
+                bin_indices[:,f] = torch.as_tensor( X_np[:, f], device=self.device).contiguous()
         else:
             bin_indices = self.bin_data_with_existing_edges(X_np)
         return bin_indices
