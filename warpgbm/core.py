@@ -351,9 +351,13 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             self.threads_per_block
         )
 
-        directional_agreement = self.per_era_direction.mean(dim=0).abs()  # [F, B-1]
-        era_splitting_criterion = self.per_era_gain.mean(dim=0)  # [F, B-1]
-        dir_score_mask = ( directional_agreement == directional_agreement.max() ) & (era_splitting_criterion > self.min_split_gain)
+        if self.num_eras == 1:
+            era_splitting_criterion = self.per_era_gain[0,:,:]  # [F, B-1]
+            dir_score_mask = era_splitting_criterion > self.min_split_gain
+        else:
+            directional_agreement = self.per_era_direction.mean(dim=0).abs()  # [F, B-1]
+            era_splitting_criterion = self.per_era_gain.mean(dim=0)  # [F, B-1]
+            dir_score_mask = ( directional_agreement == directional_agreement.max() ) & (era_splitting_criterion > self.min_split_gain)
 
         if not dir_score_mask.any():
             return -1, -1
