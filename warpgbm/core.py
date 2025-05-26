@@ -219,10 +219,12 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             era_id = np.ones(X.shape[0], dtype="int32")
 
         # Train data preprocessing
-        self.bin_indices, era_indices, self.bin_edges, self.unique_eras, self.Y_gpu = (
+        self.bin_indices, self.era_indices, self.bin_edges, self.unique_eras, self.Y_gpu = (
             self.preprocess_gpu_data(X, y, era_id)
         )
         self.num_samples, self.num_features = X.shape
+        self.num_eras = len(self.unique_eras)
+        self.era_indices = self.era_indices.to(dtype=torch.int32)
         self.gradients = torch.zeros_like(self.Y_gpu)
         self.root_node_indices = torch.arange(self.num_samples, device=self.device, dtype=torch.int32)
         self.base_prediction = self.Y_gpu.mean().item()
@@ -231,8 +233,6 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             k = max(1, int(self.colsample_bytree * self.num_features))
         else:
             k = self.num_features
-        self.best_gains = torch.zeros(k, device=self.device)
-        self.best_bins = torch.zeros(k, device=self.device, dtype=torch.int32)
         self.feature_indices = torch.arange(self.num_features, device=self.device, dtype=torch.int32)
 
         # ─── Optional Eval Set ───
@@ -319,10 +319,10 @@ class WarpGBM(BaseEstimator, RegressorMixin):
 
     def compute_histograms(self, sample_indices, feature_indices):
         grad_hist = torch.zeros(
-            (len(feature_indices), self.num_bins), device=self.device, dtype=torch.float32
+            ( self.num_eras, len(feature_indices), self.num_bins), device=self.device, dtype=torch.float32
         )
         hess_hist = torch.zeros(
-            (len(feature_indices), self.num_bins), device=self.device, dtype=torch.float32
+            ( self.num_eras, len(feature_indices), self.num_bins), device=self.device, dtype=torch.float32
         )
 
         node_kernel.compute_histogram3(
@@ -330,6 +330,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             self.residual,
             sample_indices,
             feature_indices,
+            self.era_indices,
             grad_hist,
             hess_hist,
             self.num_bins,
@@ -345,21 +346,26 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             self.min_split_gain,
             self.min_child_weight,
             self.L2_reg,
-            self.best_gains,
-            self.best_bins,
-            self.threads_per_block,
+            self.per_era_gain,
+            self.per_era_direction,
+            self.threads_per_block
         )
 
-        if torch.all(self.best_bins == -1):
-            return -1, -1  # No valid split found
+        directional_agreement = self.per_era_direction.mean(dim=0).abs()  # [F, B-1]
+        era_splitting_criterion = self.per_era_gain.mean(dim=0)  # [F, B-1]
+        dir_score_mask = ( directional_agreement == directional_agreement.max() ) & (era_splitting_criterion > self.min_split_gain)
+
+        if not dir_score_mask.any():
+            return -1, -1
         
-        # print(self.best_bins)
-        # print(self.best_gains)
+        era_splitting_criterion[dir_score_mask == 0] = float("-inf")
+        best_idx = torch.argmax(era_splitting_criterion) #index of flattened tensor
+        split_bins = self.num_bins - 1
+        best_feature = best_idx // split_bins
+        best_bin = best_idx % split_bins
 
-        f = torch.argmax(self.best_gains).item()
-        b = self.best_bins[f].item()
+        return best_feature.item(), best_bin.item()
 
-        return f, b
 
     def grow_tree(self, gradient_histogram, hessian_histogram, node_indices, depth):
         if depth == self.max_depth:
@@ -463,6 +469,10 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             k = max(1, int(self.colsample_bytree * self.num_features))
         else:
             self.feat_indices_tree = self.feature_indices
+            k = self.num_features
+            
+        self.per_era_gain = torch.zeros(self.num_eras, k, self.num_bins-1, device=self.device, dtype=torch.float32)
+        self.per_era_direction = torch.zeros(self.num_eras, k, self.num_bins-1, device=self.device, dtype=torch.float32)
 
         for i in range(self.n_estimators):
             self.residual = self.Y_gpu - self.gradients

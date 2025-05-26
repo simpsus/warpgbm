@@ -2,78 +2,88 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
-__global__ void best_split_kernel_global_only(
-    const float *__restrict__ G, // [F x B]
-    const float *__restrict__ H, // [F x B]
-    int F,
-    int B,
+__global__ void directional_split_kernel(
+    const float *__restrict__ G,                // [E * F * B]
+    const float *__restrict__ H,                // [E * F * B]
+    int E, int F, int B,
     float min_split_gain,
     float min_child_samples,
     float eps,
-    float *__restrict__ best_gains, // [F]
-    int *__restrict__ best_bins     // [F]
+    float *__restrict__ per_era_gain,           // [E * F * (B-1)]
+    float *__restrict__ per_era_direction       // [E * F * (B-1)]
 )
 {
-    int f = blockIdx.x * blockDim.x + threadIdx.x;
-    if (f >= F)
-        return;
+    int f = blockIdx.x * blockDim.x + threadIdx.x; // feature index
+    int e = blockIdx.y;                            // era index
+
+    if (f >= F || e >= E) return;
+
+    // Access base offset for this (era, feature)
+    int base = e * F * B + f * B;
+    int base_gain = e * F * (B - 1) + f * (B - 1);
 
     float G_total = 0.0f, H_total = 0.0f;
-    for (int b = 0; b < B; ++b)
-    {
-        G_total += G[f * B + b];
-        H_total += H[f * B + b];
+    for (int b = 0; b < B; ++b) {
+        G_total += G[base + b];
+        H_total += H[base + b];
     }
 
     float G_L = 0.0f, H_L = 0.0f;
-    float best_gain = min_split_gain;
-    int best_bin = -1;
+    for (int b = 0; b < B - 1; ++b) {
+        G_L += G[base + b];
+        H_L += H[base + b];
 
-    for (int b = 0; b < B - 1; ++b)
-    {
-        G_L += G[f * B + b];
-        H_L += H[f * B + b];
         float G_R = G_total - G_L;
         float H_R = H_total - H_L;
 
-        if (H_L >= min_child_samples && H_R >= min_child_samples)
-        {
-            float gain = (G_L * G_L) / (H_L + eps) + (G_R * G_R) / (H_R + eps) - (G_total * G_total) / (H_total + eps);
-            if (gain > best_gain)
-            {
-                best_gain = gain;
-                best_bin = b;
-            }
-        }
-    }
+        float gain = 0.0f;
+        float dir = 0.0f;
 
-    best_gains[f] = best_gain;
-    best_bins[f] = best_bin;
+        if (H_L >= min_child_samples && H_R >= min_child_samples) {
+            gain = (G_L * G_L) / (H_L + eps)
+                 + (G_R * G_R) / (H_R + eps)
+                 - (G_total * G_total) / (H_total + eps);
+
+            float left_val = G_L / (H_L + eps);
+            float right_val = G_R / (H_R + eps);
+            dir = (left_val > right_val) ? 1.0f : -1.0f;
+        }
+
+        per_era_gain[base_gain + b] = gain;
+        per_era_direction[base_gain + b] = dir;
+    }
 }
 
-void launch_best_split_kernel_cuda(
-    const at::Tensor &G, // [F x B]
-    const at::Tensor &H, // [F x B]
+void launch_directional_split_kernel(
+    const at::Tensor &G, // [E, F, B]
+    const at::Tensor &H, // [E, F, B]
     float min_split_gain,
     float min_child_samples,
     float eps,
-    at::Tensor &best_gains, // [F], float32
-    at::Tensor &best_bins,  // [F], int32
-    int threads)
+    at::Tensor &per_era_gain,       // [E, F, B]
+    at::Tensor &per_era_direction,  // [E, F, B]
+    int threads = 128)
 {
-    int F = G.size(0);
-    int B = G.size(1);
+    int E = G.size(0);
+    int F = G.size(1);
+    int B = G.size(2);
 
-    int blocks = (F + threads - 1) / threads;
+    dim3 blocks((F + threads - 1) / threads, E); // (feature blocks, era grid)
+    dim3 thread_dims(threads);
 
-    best_split_kernel_global_only<<<blocks, threads>>>(
+    directional_split_kernel<<<blocks, thread_dims>>>(
         G.data_ptr<float>(),
         H.data_ptr<float>(),
-        F,
-        B,
+        E, F, B,
         min_split_gain,
         min_child_samples,
         eps,
-        best_gains.data_ptr<float>(),
-        best_bins.data_ptr<int>());
+        per_era_gain.data_ptr<float>(),
+        per_era_direction.data_ptr<float>());
+
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("Directional split kernel launch failed: %s\n", cudaGetErrorString(err));
+    }
 }
+

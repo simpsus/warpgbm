@@ -3,21 +3,22 @@
 
 // Declare the function from histogram_kernel.cu
 
-void launch_best_split_kernel_cuda(
-    const at::Tensor &G, // [F x B]
-    const at::Tensor &H, // [F x B]
+void launch_directional_split_kernel(
+    const at::Tensor &G, // [E, F, B]
+    const at::Tensor &H, // [E, F, B]
     float min_split_gain,
     float min_child_samples,
     float eps,
-    at::Tensor &best_gains, // [F], float32
-    at::Tensor &best_bins,
-    int threads);
+    at::Tensor &per_era_gain,       // [E, F, B]
+    at::Tensor &per_era_direction,  // [E, F, B]
+    int threads = 128);
 
 void launch_histogram_kernel_cuda_configurable(
     const at::Tensor &bin_indices,
-    const at::Tensor &residual,
+    const at::Tensor &residuals,
     const at::Tensor &sample_indices,
     const at::Tensor &feature_indices,
+    const at::Tensor &era_indices,
     at::Tensor &grad_hist,
     at::Tensor &hess_hist,
     int num_bins,
@@ -40,7 +41,7 @@ void predict_with_forest(
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 {
     m.def("compute_histogram3", &launch_histogram_kernel_cuda_configurable, "Histogram Feature Shared Mem");
-    m.def("compute_split", &launch_best_split_kernel_cuda, "Best Split (CUDA)");
+    m.def("compute_split", &launch_directional_split_kernel, "Best Split (CUDA)");
     m.def("custom_cuda_binner", &launch_bin_column_kernel, "Custom CUDA binning kernel");
     m.def("predict_forest", &predict_with_forest, "CUDA Predictions");
 }
