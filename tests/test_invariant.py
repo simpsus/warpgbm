@@ -67,7 +67,7 @@ def test_fit_predictpytee_correlation():
         learning_rate=1,
         threads_per_block=128,
         rows_per_thread=4,
-        colsample_bytree=1.0,
+        colsample_bytree=0.9,
         min_child_weight=4
     )
 
