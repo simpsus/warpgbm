@@ -275,9 +275,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             max_vals = X_np.max(axis=0)
 
             if is_integer_type and np.all(max_vals < self.num_bins):
-                print(
-                    "Detected pre-binned integer input — skipping quantile binning."
-                )
+                print("Detected pre-binned integer input — skipping quantile binning.")
                 for f in range(self.num_features):
                     bin_indices[:,f] = torch.as_tensor( X_np[:, f], device=self.device).contiguous()
                 # bin_indices = X_np.to("cuda", non_blocking=True).contiguous()
@@ -382,28 +380,14 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             gradient_histogram, hessian_histogram
         )
 
-        # print(local_feature, best_bin)
-
         if local_feature == -1:
             leaf_value = self.residual[node_indices].mean()
             self.gradients[node_indices] += self.learning_rate * leaf_value
             return {"leaf_value": leaf_value.item(), "samples": parent_size}
         
-        # print("DEBUG SHAPES -> bin_indices:", self.bin_indices.shape,
-        #     "| node_indices max:", node_indices.max().item(),
-        #     "| local_feature:", local_feature,
-        #     "| feat_indices_tree len:", len(self.feat_indices_tree),
-        #     "| feat index:", self.feat_indices_tree[local_feature])
-        
         split_mask = self.bin_indices[node_indices, self.feat_indices_tree[local_feature]] <= best_bin
         left_indices = node_indices[split_mask]
         right_indices = node_indices[~split_mask]
-
-        # print("DEBUG SHAPES -> left_indices:", left_indices.shape,
-        #       "| right_indices:", right_indices.shape,
-        #       "| parent_size:", parent_size,
-        #       "| local_feature:", local_feature,
-        #       "| best_bin:", best_bin)
 
         left_size = left_indices.numel()
         right_size = right_indices.numel()

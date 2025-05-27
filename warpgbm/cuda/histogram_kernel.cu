@@ -3,14 +3,14 @@
 #include <torch/extension.h>
 
 __global__ void histogram_tiled_configurable_kernel(
-    const int8_t *__restrict__ bin_indices, // [N, F]
+    const int8_t *__restrict__ bin_indices, // [N, F_master]
     const float *__restrict__ residuals,    // [N]
     const int32_t *__restrict__ sample_indices, // [N]
     const int32_t *__restrict__ feature_indices, // [F]
     const int32_t *__restrict__ era_indices, // [N]
     float *__restrict__ grad_hist,          // [F * B]
     float *__restrict__ hess_hist,          // [F * B]
-    int64_t N, int64_t F, int64_t B, int64_t num_eras,
+    int64_t N, int64_t F_master, int64_t F, int64_t B, int64_t num_eras,
     int rows_per_thread)
 {
     int hist_feat_idx = blockIdx.x;
@@ -36,7 +36,7 @@ __global__ void histogram_tiled_configurable_kernel(
         if (row < N)
         {
             int sample = sample_indices[row];
-            int8_t bin = bin_indices[sample * F + feat];
+            int8_t bin = bin_indices[sample * F_master + feat];
             int32_t era = era_indices[sample];
             if (bin >= 0 && bin < B)
             {
@@ -93,7 +93,7 @@ void launch_histogram_kernel_cuda_configurable(
         era_indices.data_ptr<int32_t>(),
         grad_hist.data_ptr<float>(),
         hess_hist.data_ptr<float>(),
-        N, num_features_master, num_bins, num_eras,
+        N, num_features_master, F, num_bins, num_eras,
         rows_per_thread);
 
     cudaError_t err = cudaGetLastError();

@@ -58,6 +58,8 @@ def test_fit_predictpytee_correlation():
     X_test = np.load(os.path.join(data_dir, "X_test.npy"))
     y_test = np.load(os.path.join(data_dir, "y_test.npy"))
 
+    print(f"X shape: {X.shape}, y shape: {y.shape}")
+
     model = WarpGBM(
         max_depth=10,
         num_bins=127,
