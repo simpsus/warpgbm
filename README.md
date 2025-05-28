@@ -131,7 +131,9 @@ We contrast two views of the data:
 - **OOD Setting (Era-Splitting)**: Data is explicitly grouped by environment (era).\
   The model checks whether a signal holds across all groups — enforcing **robustness**.
 
-*📷 [Placeholder for future visual illustration]*
+<img src="https://github.com/user-attachments/assets/2be11ef3-6f2e-4636-ab91-307a73add247" alt="ChatGPT Image May 28, 2025, 05_05_09 PM" width="320"/>
+
+
 
 
 ---
