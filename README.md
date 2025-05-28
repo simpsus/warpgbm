@@ -1,18 +1,43 @@
 ![warpgbm](https://github.com/user-attachments/assets/dee9de16-091b-49c1-a8fa-2b4ab6891184)
 
-
 # WarpGBM
 
 WarpGBM is a high-performance, GPU-accelerated Gradient Boosted Decision Tree (GBDT) library built with PyTorch and CUDA. It offers blazing-fast histogram-based training and efficient prediction, with compatibility for research and production workflows.
 
+**New in v1.0.0:** WarpGBM introduces *Invariant Gradient Boosting* — a powerful approach to learning signals that remain stable across shifting environments (e.g., time, regimes, or datasets). Powered by a novel algorithm called **[Directional Era-Splitting (DES)](https://arxiv.org/abs/2309.14496)**, WarpGBM doesn't just train faster than other leading GBDT libraries — it trains smarter.
+
+If your data evolves over time, WarpGBM is the only GBDT library designed to *adapt and generalize*.
 ---
+
+## Contents
+
+- [Features](#features)
+- [Benchmarks](#benchmarks)
+- [Installation](#installation)
+- [Learning Invariant Signals Across Environments](#learning-invariant-signals-across-environments)
+  - [Why This Matters](#why-this-matters)
+  - [Visual Intuition](#visual-intuition)
+  - [Key References](#key-references)
+- [Examples](#examples)
+  - [Quick Comparison with LightGBM CPU version](#quick-comparison-with-lightgbm-cpu-version)
+  - [Pre-binned Data Example (Numerai)](#pre-binned-data-example-numerai)
+- [Documentation](#documentation)
+- [Acknowledgements](#acknowledgements)
+- [Version Notes](#version-notes)
+
 
 ## Features
 
-- GPU-accelerated training and histogram construction using custom CUDA kernels
-- Drop-in scikit-learn style interface
-- Supports pre-binned data or automatic quantile binning
-- Simple install with `pip`
+- **Blazing-fast GPU training** with custom CUDA kernels for binning, histogram building, split finding, and prediction
+- **Invariant signal learning** via [Directional Era-Splitting (DES)](https://arxiv.org/abs/2309.14496) — designed for datasets with shifting environments (e.g., time, regimes, experimental settings)
+- Drop-in **scikit-learn style interface** for easy adoption
+- Supports **pre-binned data** or **automatic quantile binning**
+- Works with `float32` or `int8` inputs
+- Built-in **validation and early stopping** support with MSE, RMSLE, or correlation metrics
+- Simple install with `pip`, no custom drivers required
+
+> 💡 **Note:** WarpGBM v1.0.0 is a *generalization* of the traditional GBDT algorithm.
+> To run standard GBM training at maximum speed, simply omit the `era_id` argument — WarpGBM will behave like a traditional booster but with industry-leading performance.
 
 ---
 
@@ -74,7 +99,61 @@ Before either method, make sure you’ve installed PyTorch with GPU support:\
 
 ---
 
-## Example
+## Learning Invariant Signals Across Environments
+
+Most supervised learning models rely on an assumption known as the **Empirical Risk Minimization (ERM)** principle. Under ERM, the data distribution connecting inputs \( X \) and targets \( Y \) is assumed to be **fixed** and **stationary** across training, validation, and test splits. That is:
+
+> The patterns you learn from the training set are expected to generalize out-of-sample — *as long as the test data follows the same distribution as the training data.*
+
+However, this assumption is often violated in real-world settings. Data frequently shifts across time, geography, experimental conditions, or other hidden factors. This phenomenon is known as **distribution shift**, and it leads to models that perform well in-sample but fail catastrophically out-of-sample.
+
+This challenge motivates the field of **Out-of-Distribution (OOD) Generalization**, which assumes your data is drawn from **distinct environments or eras** — e.g., time periods, customer segments, experimental trials. Some signals may appear predictive within specific environments but vanish or reverse in others. These are called **spurious signals**. On the other hand, signals that remain consistently predictive across all environments are called **invariant signals**.
+
+WarpGBM v1.0.0 introduces **Directional Era-Splitting (DES)**, a new algorithm designed to identify and learn from invariant signals — ignoring signals that fail to generalize across environments.
+
+---
+
+### Why This Matters
+
+- Standard models trained via ERM can learn to exploit **spurious correlations** that only hold in some parts of the data.
+- DES explicitly tests whether a feature's split is **directionally consistent** across all eras — only such *invariant splits* are kept.
+- This approach has been shown to reduce overfitting and improve out-of-sample generalization, particularly in financial and scientific datasets.
+
+---
+
+### Visual Intuition
+
+We contrast two views of the data:
+
+- **ERM Setting**: All data is assumed to come from the same source (single distribution).\
+  No awareness of environments — spurious signals can dominate.
+
+- **OOD Setting (Era-Splitting)**: Data is explicitly grouped by environment (era).\
+  The model checks whether a signal holds across all groups — enforcing **robustness**.
+
+*📷 [Placeholder for future visual illustration]*
+
+---
+
+### Key References
+
+- **Invariant Risk Minimization (IRM)**: [Arjovsky et al., 2019](https://arxiv.org/abs/1907.02893)
+- **Learning Explanations That Are Hard to Vary**: [Parascandolo et al., 2020](https://arxiv.org/abs/2009.00329)
+- **Era Splitting: Invariant Learning for Decision Trees**: [DeLise, 2023](https://arxiv.org/abs/2309.14496)
+
+---
+
+WarpGBM is the **first open-source GBDT framework to integrate this OOD-aware approach natively**, using efficient CUDA kernels to evaluate per-era consistency during tree growth. It’s not just faster — it’s smarter.
+
+---
+
+## Examples
+
+WarpGBM is easy to drop into any supervised learning workflow and comes with curated examples in the `examples/` folder.
+
+ - `Spiral Data.ipynb`: synthetic OOD benchmark from Learning Explanations That Are Hard to Vary
+
+### Quick Comparison with LightGBM CPU version
 
 ```python
 import numpy as np
@@ -116,7 +195,7 @@ WarpGBM:     corr = 0.8621, time = 5.40s
 
 ---
 
-## Pre-binned Data Example (Numerai)
+### Pre-binned Data Example (Numerai)
 
 WarpGBM can save additional training time if your dataset is already pre-binned. The Numerai tournament data is a great example:
 
@@ -166,16 +245,6 @@ WarpGBM:     corr = 0.0660, time = 49.16s
 
 ---
 
-### Run it live in Colab
-
-You can try WarpGBM in a live Colab notebook using real pre-binned Numerai tournament data:
-
-[Open in Colab](https://colab.research.google.com/drive/10mKSjs9UvmMgM5_lOXAylq5LUQAnNSi7?usp=sharing)
-
-No installation required — just press **"Open in Playground"**, then **Run All**!
-
----
-
 ## Documentation
 
 ### `WarpGBM` Parameters:
@@ -201,7 +270,7 @@ No installation required — just press **"Open in Playground"**, then **Run All
    y_eval=None,                   # numpy array (float or int) 1 dimension (eval_num_samples)
    eval_every_n_trees=None,       # const (int) >= 1 
    early_stopping_rounds=None,    # const (int) >= 1
-   eval_metric='mse'              # string, one of 'mse' or 'corr'. For corr, loss is 1 - correlation(y_true, preds)
+   eval_metric='mse'              # string, one of 'mse', 'rmsle' or 'corr'. For corr, loss is 1 - correlation(y_true, preds)
 )
 ```
 Train with optional validation set and early stopping.
@@ -239,3 +308,7 @@ WarpGBM builds on the shoulders of PyTorch, scikit-learn, LightGBM, and the CUDA
 ### v0.1.26
 
 - Fix Memory bugs in prediction and colsample bytree logic. Added "corr" eval metric. 
+
+### v1.0.0
+
+- Introduce invariant learning via directional era splitting (DES). Also streamline VRAM improvements over previous sub versions.
