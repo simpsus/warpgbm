@@ -45,13 +45,13 @@ If your data evolves over time, WarpGBM is the only GBDT library designed to *ad
 
 ### Scikit-Learn Synthetic Data: 1 Million Rows and 1,000 Features
 
-In this benchmark we compare the speed and in-sample correlation of **WarpGBM v0.1.21** against LightGBM, XGBoost and CatBoost, all with their GPU-enabled versions. This benchmark runs on Google Colab with the L4 GPU environment.
+In this benchmark we compare the speed and in-sample correlation of **WarpGBM v1.0.0** against LightGBM, XGBoost and CatBoost, all with their GPU-enabled versions. This benchmark runs on Google Colab with the L4 GPU environment.
 
 ```
-   WarpGBM:   corr = 0.8882, train = 18.7s, infer = 4.9s
-   XGBoost:   corr = 0.8877, train = 33.1s, infer = 8.1s
-  LightGBM:   corr = 0.8604, train = 30.3s, infer = 1.4s
-  CatBoost:   corr = 0.8935, train = 400.0s, infer = 382.6s
+   WarpGBM:   corr = 0.8882, train = 17.4s, infer = 3.2s
+   XGBoost:   corr = 0.8877, train = 33.2s, infer = 8.0s
+  LightGBM:   corr = 0.8604, train = 29.8s, infer = 1.6s
+  CatBoost:   corr = 0.8935, train = 392.1s, infer = 379.2s
 ```
 
 Colab Notebook: https://colab.research.google.com/drive/16U1kbYlD5HibGbnF5NGsjChZ1p1IA2pK?usp=sharing
