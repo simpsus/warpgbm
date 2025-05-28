@@ -1,4 +1,4 @@
-![warpgbm](https://github.com/user-attachments/assets/dee9de16-091b-49c1-a8fa-2b4ab6891184)
+![raw](https://github.com/user-attachments/assets/924844ef-2536-4bde-a330-5e30f6b0762c)
 
 # WarpGBM
 
@@ -132,6 +132,7 @@ We contrast two views of the data:
   The model checks whether a signal holds across all groups — enforcing **robustness**.
 
 *📷 [Placeholder for future visual illustration]*
+
 
 ---
 
