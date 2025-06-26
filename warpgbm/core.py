@@ -278,6 +278,8 @@ class WarpGBM(BaseEstimator, RegressorMixin):
                 print("Detected pre-binned integer input — skipping quantile binning.")
                 for f in range(self.num_features):
                     bin_indices[:,f] = torch.as_tensor( X_np[:, f], device=self.device).contiguous()
+                self.num_bins = int(np.max(max_vals))+1
+                print(f'Auto Settting max bins to: {self.num_bins}')
                 # bin_indices = X_np.to("cuda", non_blocking=True).contiguous()
 
                 # We'll store None or an empty tensor in self.bin_edges
