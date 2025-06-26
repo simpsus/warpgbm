@@ -77,7 +77,7 @@ void launch_histogram_kernel_cuda_configurable(
     int rows_per_thread = 1
 )
 {
-    const int ERA_TILE = 64;                    // fits 48 KB up to B≈350
+    const int ERA_TILE = 32;                    // fits 48 KB up to B≈350
 
     int64_t N  = sample_indices.size(0);
     int64_t F  = feature_indices.size(0);
