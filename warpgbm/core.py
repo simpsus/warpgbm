@@ -3,8 +3,8 @@ import numpy as np
 from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.metrics import mean_squared_log_error
 from warpgbm.cuda import node_kernel
-from warpgbm.metrics import rmsle_torch
-from tqdm import tqdm
+
+from tqdm import tqdm, trange
 from typing import Tuple
 from torch import Tensor
 import gc
@@ -39,6 +39,16 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             L1_reg=L1_reg,
             colsample_bytree=colsample_bytree,
         )
+        # init attributes defined during fitting
+        self.num_eras = None
+        self.era_indices = None
+        self.feature_indices = None
+        self.training_loss = None
+        self.per_era_gain = None
+        self.per_era_direction = None
+        self.residual = None
+        self.feat_indices_tree = None
+        self.es_callbacks = None
 
         self.num_bins = num_bins
         self.max_depth = max_depth
@@ -125,8 +135,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             )
 
     def validate_fit_params(
-        self, X, y, era_id, X_eval, y_eval, eval_every_n_trees, early_stopping_rounds, eval_metric
-    ):
+        self, X, y, era_id):
         # ─── Required: X and y ───
         if not isinstance(X, np.ndarray) or not isinstance(y, np.ndarray):
             raise TypeError("X and y must be numpy arrays.")
@@ -152,68 +161,18 @@ class WarpGBM(BaseEstimator, RegressorMixin):
                     f"era_id must have same length as y. Got {len(era_id)} and {len(y)}."
                 )
 
-        # ─── Optional: Eval Set ───
-        eval_args = [X_eval, y_eval, eval_every_n_trees]
-        if any(arg is not None for arg in eval_args):
-            # Require all of them
-            if X_eval is None or y_eval is None or eval_every_n_trees is None:
-                raise ValueError(
-                    "If using eval set, X_eval, y_eval, and eval_every_n_trees must all be defined."
-                )
-
-            if not isinstance(X_eval, np.ndarray) or not isinstance(y_eval, np.ndarray):
-                raise TypeError("X_eval and y_eval must be numpy arrays.")
-            if X_eval.ndim != 2:
-                raise ValueError(
-                    f"X_eval must be 2-dimensional, got shape {X_eval.shape}"
-                )
-            if y_eval.ndim != 1:
-                raise ValueError(
-                    f"y_eval must be 1-dimensional, got shape {y_eval.shape}"
-                )
-            if X_eval.shape[0] != y_eval.shape[0]:
-                raise ValueError(
-                    f"X_eval and y_eval must have same number of rows. Got {X_eval.shape[0]} and {y_eval.shape[0]}."
-                )
-
-            if not isinstance(eval_every_n_trees, int) or eval_every_n_trees <= 0:
-                raise ValueError(
-                    f"eval_every_n_trees must be a positive integer, got {eval_every_n_trees}."
-                )
-
-            if early_stopping_rounds is not None:
-                if (
-                    not isinstance(early_stopping_rounds, int)
-                    or early_stopping_rounds <= 0
-                ):
-                    raise ValueError(
-                        f"early_stopping_rounds must be a positive integer, got {early_stopping_rounds}."
-                    )
-            else:
-                # No early stopping = set to "never trigger"
-                early_stopping_rounds = self.n_estimators + 1
-
-            if eval_metric not in ["mse", "corr", "rmsle"]:
-                raise ValueError(
-                    f"Invalid eval_metric: {eval_metric}. Choose 'mse' or 'corr', 'rmsle'."
-                )
-
-        return early_stopping_rounds  # May have been defaulted here
 
     def fit(
         self,
         X,
         y,
         era_id=None,
-        X_eval=None,
-        y_eval=None,
-        eval_every_n_trees=None,
-        early_stopping_rounds=None,
-        eval_metric = "mse",
+        es_callbacks=None
     ):
-        early_stopping_rounds = self.validate_fit_params(
-            X, y, era_id, X_eval, y_eval, eval_every_n_trees, early_stopping_rounds, eval_metric
-        )
+        if es_callbacks is None:
+            es_callbacks = []
+        self.es_callbacks = es_callbacks
+        self.validate_fit_params(X, y, era_id)
 
         if era_id is None:
             era_id = np.ones(X.shape[0], dtype="int32")
@@ -235,18 +194,6 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             k = self.num_features
         self.feature_indices = torch.arange(self.num_features, device=self.device, dtype=torch.int32)
 
-        # ─── Optional Eval Set ───
-        if X_eval is not None and y_eval is not None:
-            self.bin_indices_eval = self.bin_inference_data(X_eval)
-            self.Y_gpu_eval = torch.from_numpy(y_eval).to(torch.float32).to(self.device)
-            self.eval_every_n_trees = eval_every_n_trees
-            self.early_stopping_rounds = early_stopping_rounds
-            self.eval_metric = eval_metric
-        else:
-            self.bin_indices_eval = None
-            self.Y_gpu_eval = None
-            self.eval_every_n_trees = None
-            self.early_stopping_rounds = None
 
         # ─── Grow the forest ───
         with torch.no_grad():
@@ -418,43 +365,11 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             "right": right_child,
         }
     
-    def get_eval_metric(self, y_true, y_pred):
-        if self.eval_metric == "mse":
-            return ((y_true - y_pred) ** 2).mean().item()
-        elif self.eval_metric == "corr":
-            return 1 - torch.corrcoef(torch.vstack([y_true, y_pred]))[0, 1].item()
-        elif self.eval_metric == "rmsle":
-            return rmsle_torch(y_true, y_pred).item()
-        else:
-            raise ValueError(f"Invalid eval_metric: {self.eval_metric}.")
 
-    def compute_eval(self, i):
-        if self.eval_every_n_trees == None:
-            return
-        
-        train_loss = ((self.Y_gpu - self.gradients) ** 2).mean().item()
-        self.training_loss.append(train_loss)
 
-        if i % self.eval_every_n_trees == 0:
-            eval_preds = self.predict_binned(self.bin_indices_eval)
-            eval_loss = self.get_eval_metric( self.Y_gpu_eval, eval_preds )
-            self.eval_loss.append(eval_loss)
-
-            if len(self.eval_loss) > self.early_stopping_rounds:
-                if self.eval_loss[-(self.early_stopping_rounds+1)] < self.eval_loss[-1]:
-                    self.stop = True
-
-            print(
-                f"🌲 Tree {i+1}/{self.n_estimators} | Train MSE: {train_loss:.6f} | Eval {self.eval_metric}: {eval_loss:.6f}"
-            )
-
-            del eval_preds, eval_loss, train_loss
 
     def grow_forest(self):
         self.training_loss = []
-        self.eval_loss = []  # if eval set is given
-        self.stop = False
-
         if self.colsample_bytree < 1.0:
             k = max(1, int(self.colsample_bytree * self.num_features))
         else:
@@ -464,7 +379,8 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         self.per_era_gain = torch.zeros(self.num_eras, k, self.num_bins-1, device=self.device, dtype=torch.float32)
         self.per_era_direction = torch.zeros(self.num_eras, k, self.num_bins-1, device=self.device, dtype=torch.float32)
 
-        for i in range(self.n_estimators):
+        iter = trange(self.n_estimators)
+        for i in iter:
             self.residual = self.Y_gpu - self.gradients
 
             if self.colsample_bytree < 1.0:
@@ -479,10 +395,14 @@ class WarpGBM(BaseEstimator, RegressorMixin):
                 0,
             )
             self.forest[i] = tree
-
-            self.compute_eval(i)
-
-            if self.stop:
+            self.training_loss.append(((self.Y_gpu - self.gradients) ** 2).mean().item())
+            stop = False
+            for es_callback in self.es_callbacks: # TODO: This is "any callback terminates". We could also implement "all callbacks terminate"
+                if es_callback.evaluate_stopping(self):
+                    stop = True
+                    break
+                iter.desc = es_callback.eval_status
+            if stop:
                 break
 
         print("Finished training forest.")
