@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 from sklearn.base import BaseEstimator, RegressorMixin
+from loguru import logger
 from sklearn.metrics import mean_squared_log_error
 from warpgbm.cuda import node_kernel
 
@@ -24,6 +25,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         L1_reg=0.0,
         device="cuda",
         colsample_bytree=1.0,
+        announce_pre_bins=False
     ):
         # Validate arguments
         self._validate_hyperparams(
@@ -76,6 +78,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         self.L1_reg = L1_reg
         self.forest = [{} for _ in range(self.n_estimators)]
         self.colsample_bytree = colsample_bytree
+        self.announce_pre_bins = announce_pre_bins
 
     @property
     def ensemble_size(self):
@@ -231,11 +234,11 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             max_vals = X_np.max(axis=0)
 
             if is_integer_type and np.all(max_vals < self.num_bins):
-                print("Detected pre-binned integer input — skipping quantile binning.")
                 for f in range(self.num_features):
                     bin_indices[:,f] = torch.as_tensor( X_np[:, f], device=self.device).contiguous()
                 self.num_bins = int(np.max(max_vals))+1
-                print(f'Auto Settting max bins to: {self.num_bins}')
+                if self.announce_pre_bins:
+                    logger.debug(f"Detected pre-binned integer input — skipping quantile binning. Auto settting max bins to: {self.num_bins}")
                 # bin_indices = X_np.to("cuda", non_blocking=True).contiguous()
 
                 # We'll store None or an empty tensor in self.bin_edges
@@ -248,8 +251,8 @@ class WarpGBM(BaseEstimator, RegressorMixin):
                     era_id_gpu, return_inverse=True
                 )
                 return bin_indices, era_indices, bin_edges, unique_eras, Y_gpu
-            
-            print("quantile binning.")
+            if self.announce_pre_bins:
+                logger.debug("quantile binning.")
 
             bin_edges = torch.empty(
                 (self.num_features, self.num_bins - 1),
@@ -414,7 +417,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             if stop:
                 break
 
-        print("Finished training forest.")
+        logger.debug("Finished training forest.")
 
     def bin_data_with_existing_edges(self, X_np):
         num_samples = X_np.shape[0]
@@ -454,7 +457,8 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         if is_integer_type and X_np.shape[1] == self.num_features:
             max_vals = X_np.max(axis=0)
             if np.all(max_vals < self.num_bins):
-                print("Detected pre-binned input at predict-time — skipping binning.")
+                if self.announce_pre_bins:
+                    logger.debug("Detected pre-binned input at predict-time — skipping binning.")
                 is_prebinned = True
             else:
                 is_prebinned = False
