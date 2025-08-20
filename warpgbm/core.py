@@ -171,6 +171,8 @@ class WarpGBM(BaseEstimator, RegressorMixin):
     ):
         if es_callbacks is None:
             es_callbacks = []
+        else:
+            assert isinstance(es_callbacks, list)
         self.es_callbacks = es_callbacks
         self.validate_fit_params(X, y, era_id)
 
