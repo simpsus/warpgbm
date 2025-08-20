@@ -172,7 +172,9 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         if es_callbacks is None:
             es_callbacks = []
         else:
-            assert isinstance(es_callbacks, list)
+            assert isinstance(es_callbacks, list), "early_stopping_callbacks must be a list."
+        for es_callback in es_callbacks:
+            assert hasattr(es_callback, "eval_status"), "every early_stopping callback must have an eval_status attribute."
         self.es_callbacks = es_callbacks
         self.validate_fit_params(X, y, era_id)
 
