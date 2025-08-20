@@ -77,6 +77,10 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         self.forest = [{} for _ in range(self.n_estimators)]
         self.colsample_bytree = colsample_bytree
 
+    @property
+    def ensemble_size(self):
+        return len([t for t in self.forest if len(t) > 0])
+
     def _validate_hyperparams(self, **kwargs):
         # Type checks
         int_params = [
@@ -174,6 +178,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         else:
             assert isinstance(es_callbacks, list), "early_stopping_callbacks must be a list."
         for es_callback in es_callbacks:
+            # There is only one place to show one status. so if there is more than one, the behaviour is not defined
             assert hasattr(es_callback, "eval_status"), "every early_stopping callback must have an eval_status attribute."
         self.es_callbacks = es_callbacks
         self.validate_fit_params(X, y, era_id)
