@@ -481,6 +481,18 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         del bin_indices
         return preds
 
+    def prune_iterations(self, last_iteration):
+        """
+        prunes the trees of the model so that the last_iteration is the final one.
+        useful when e.g. continous evaluation a best iteration has been identified that is different
+        from the number of trees created by the fit method
+        :param last_iteration: the last iteration of the model to retain
+        :return: the pruned iterations
+        """
+        return_value = self.forest[last_iteration:]
+        self.forest = self.forest[:last_iteration]
+        return return_value
+
     def flatten_tree(self, tree, max_nodes):
         flat = torch.full((max_nodes, 6), float("nan"), dtype=torch.float32)
         node_counter = [0]
