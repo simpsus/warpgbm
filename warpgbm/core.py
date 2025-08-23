@@ -309,17 +309,18 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             self.per_era_direction,
             self.threads_per_block
         )
-
+        max_agreement = 0
         if self.num_eras == 1:
             era_splitting_criterion = self.per_era_gain[0,:,:]  # [F, B-1]
             dir_score_mask = era_splitting_criterion > self.min_split_gain
         else:
             directional_agreement = self.per_era_direction.mean(dim=0).abs()  # [F, B-1]
+            max_agreement = directional_agreement.max()
             era_splitting_criterion = self.per_era_gain.mean(dim=0)  # [F, B-1]
-            dir_score_mask = ( directional_agreement == directional_agreement.max() ) & (era_splitting_criterion > self.min_split_gain)
+            dir_score_mask = ( directional_agreement == max_agreement ) & (era_splitting_criterion > self.min_split_gain)
 
         if not dir_score_mask.any():
-            return -1, -1
+            return -1, -1, 0
         
         era_splitting_criterion[dir_score_mask == 0] = float("-inf")
         best_idx = torch.argmax(era_splitting_criterion) #index of flattened tensor
@@ -327,7 +328,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         best_feature = best_idx // split_bins
         best_bin = best_idx % split_bins
 
-        return best_feature.item(), best_bin.item()
+        return best_feature.item(), best_bin.item(), max_agreement
 
 
     def grow_tree(self, gradient_histogram, hessian_histogram, node_indices, depth):
@@ -337,7 +338,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             return {"leaf_value": leaf_value.item(), "samples": node_indices.numel()}
 
         parent_size = node_indices.numel()
-        local_feature, best_bin = self.find_best_split(
+        local_feature, best_bin, direction = self.find_best_split(
             gradient_histogram, hessian_histogram
         )
 
@@ -375,6 +376,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             "bin": best_bin,
             "left": left_child,
             "right": right_child,
+            "direction": direction,
         }
     
 
