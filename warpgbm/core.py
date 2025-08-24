@@ -315,7 +315,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             dir_score_mask = era_splitting_criterion > self.min_split_gain
         else:
             directional_agreement = self.per_era_direction.mean(dim=0).abs()  # [F, B-1]
-            max_agreement = directional_agreement.max()
+            max_agreement = directional_agreement.max().item() / self.num_eras #normalize by buckets
             era_splitting_criterion = self.per_era_gain.mean(dim=0)  # [F, B-1]
             dir_score_mask = ( directional_agreement == max_agreement ) & (era_splitting_criterion > self.min_split_gain)
 
