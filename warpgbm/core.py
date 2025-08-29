@@ -328,7 +328,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             return -1, -1, 0
 
         era_splitting_criterion[dir_score_mask == 0] = float("-inf")
-        gain, best_idx = torch.max(era_splitting_criterion)  # index of flattened tensor
+        gain, best_idx = torch.max(era_splitting_criterion, dim=0)  # index of flattened tensor
         split_bins = self.num_bins - 1
         best_feature = best_idx // split_bins
         best_bin = best_idx % split_bins
