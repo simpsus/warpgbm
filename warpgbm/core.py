@@ -325,7 +325,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             max_agreement = max_agreement.item()  # maximum is 1, so normalizing is pointless
 
         if not dir_score_mask.any():
-            return -1, -1, 0
+            return -1, -1, 0, 0
 
         era_splitting_criterion[dir_score_mask == 0] = float("-inf")
         gain = torch.max(era_splitting_criterion)
