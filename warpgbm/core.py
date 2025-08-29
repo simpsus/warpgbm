@@ -10,22 +10,24 @@ from typing import Tuple
 from torch import Tensor
 import gc
 
+
 class WarpGBM(BaseEstimator, RegressorMixin):
     def __init__(
-        self,
-        num_bins=10,
-        max_depth=3,
-        learning_rate=0.1,
-        n_estimators=100,
-        min_child_weight=20,
-        min_split_gain=0.0,
-        threads_per_block=64,
-        rows_per_thread=4,
-        L2_reg=1e-6,
-        L1_reg=0.0,
-        device="cuda",
-        colsample_bytree=1.0,
-        announce_pre_bins=False
+            self,
+            num_bins=10,
+            max_depth=3,
+            learning_rate=0.1,
+            n_estimators=100,
+            min_child_weight=20,
+            min_split_gain=0.0,
+            threads_per_block=64,
+            rows_per_thread=4,
+            L2_reg=1e-6,
+            L1_reg=0.0,
+            device="cuda",
+            colsample_bytree=1.0,
+            announce_pre_bins=False,
+            min_directional_agreement=0
     ):
         # Validate arguments
         self._validate_hyperparams(
@@ -79,6 +81,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         self.forest = [{} for _ in range(self.n_estimators)]
         self.colsample_bytree = colsample_bytree
         self.announce_pre_bins = announce_pre_bins
+        self.min_directional_agreement = min_directional_agreement
 
     @property
     def ensemble_size(self):
@@ -110,7 +113,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
 
         for param in float_params:
             if not isinstance(
-                kwargs[param], (float, int)
+                    kwargs[param], (float, int)
             ):  # Accept ints as valid floats
                 raise TypeError(f"{param} must be a float, got {type(kwargs[param])}.")
 
@@ -142,7 +145,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             )
 
     def validate_fit_params(
-        self, X, y, era_id):
+            self, X, y, era_id):
         # ─── Required: X and y ───
         if not isinstance(X, np.ndarray) or not isinstance(y, np.ndarray):
             raise TypeError("X and y must be numpy arrays.")
@@ -168,13 +171,12 @@ class WarpGBM(BaseEstimator, RegressorMixin):
                     f"era_id must have same length as y. Got {len(era_id)} and {len(y)}."
                 )
 
-
     def fit(
-        self,
-        X,
-        y,
-        era_id=None,
-        es_callbacks=None
+            self,
+            X,
+            y,
+            era_id=None,
+            es_callbacks=None
     ):
         if es_callbacks is None:
             es_callbacks = []
@@ -182,7 +184,8 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             assert isinstance(es_callbacks, list), "early_stopping_callbacks must be a list."
         for es_callback in es_callbacks:
             # There is only one place to show one status. so if there is more than one, the behaviour is not defined
-            assert hasattr(es_callback, "eval_status"), "every early_stopping callback must have an eval_status attribute."
+            assert hasattr(es_callback,
+                           "eval_status"), "every early_stopping callback must have an eval_status attribute."
         self.es_callbacks = es_callbacks
         self.validate_fit_params(X, y, era_id)
 
@@ -205,7 +208,6 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         else:
             k = self.num_features
         self.feature_indices = torch.arange(self.num_features, device=self.device, dtype=torch.int32)
-
 
         # ─── Grow the forest ───
         with torch.no_grad():
@@ -235,10 +237,11 @@ class WarpGBM(BaseEstimator, RegressorMixin):
 
             if is_integer_type and np.all(max_vals < self.num_bins):
                 for f in range(self.num_features):
-                    bin_indices[:,f] = torch.as_tensor( X_np[:, f], device=self.device).contiguous()
-                self.num_bins = int(np.max(max_vals))+1
+                    bin_indices[:, f] = torch.as_tensor(X_np[:, f], device=self.device).contiguous()
+                self.num_bins = int(np.max(max_vals)) + 1
                 if self.announce_pre_bins:
-                    logger.debug(f"Detected pre-binned integer input — skipping quantile binning. Auto settting max bins to: {self.num_bins}")
+                    logger.debug(
+                        f"Detected pre-binned integer input — skipping quantile binning. Auto settting max bins to: {self.num_bins}")
                 # bin_indices = X_np.to("cuda", non_blocking=True).contiguous()
 
                 # We'll store None or an empty tensor in self.bin_edges
@@ -261,7 +264,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             )
 
             for f in range(self.num_features):
-                X_f = torch.as_tensor( X_np[:, f], device=self.device, dtype=torch.float32 ).contiguous()
+                X_f = torch.as_tensor(X_np[:, f], device=self.device, dtype=torch.float32).contiguous()
                 quantiles = torch.linspace(
                     0, 1, self.num_bins + 1, device="cuda", dtype=X_f.dtype
                 )[1:-1]
@@ -278,10 +281,10 @@ class WarpGBM(BaseEstimator, RegressorMixin):
 
     def compute_histograms(self, sample_indices, feature_indices):
         grad_hist = torch.zeros(
-            ( self.num_eras, len(feature_indices), self.num_bins), device=self.device, dtype=torch.float32
+            (self.num_eras, len(feature_indices), self.num_bins), device=self.device, dtype=torch.float32
         )
         hess_hist = torch.zeros(
-            ( self.num_eras, len(feature_indices), self.num_bins), device=self.device, dtype=torch.float32
+            (self.num_eras, len(feature_indices), self.num_bins), device=self.device, dtype=torch.float32
         )
 
         node_kernel.compute_histogram3(
@@ -311,26 +314,26 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         )
         max_agreement = 0
         if self.num_eras == 1:
-            era_splitting_criterion = self.per_era_gain[0,:,:]  # [F, B-1]
+            era_splitting_criterion = self.per_era_gain[0, :, :]  # [F, B-1]
             dir_score_mask = era_splitting_criterion > self.min_split_gain
         else:
             directional_agreement = self.per_era_direction.mean(dim=0).abs()  # [F, B-1]
             max_agreement = directional_agreement.max()
             era_splitting_criterion = self.per_era_gain.mean(dim=0)  # [F, B-1]
-            dir_score_mask = ( directional_agreement == max_agreement ) & (era_splitting_criterion > self.min_split_gain)
-            max_agreement = max_agreement.item() # maximum is 1, so normalizing is pointless
+            dir_score_mask = (directional_agreement >= self.min_directional_agreement) & (
+                        era_splitting_criterion > self.min_split_gain)
+            max_agreement = max_agreement.item()  # maximum is 1, so normalizing is pointless
 
         if not dir_score_mask.any():
             return -1, -1, 0
-        
+
         era_splitting_criterion[dir_score_mask == 0] = float("-inf")
-        best_idx = torch.argmax(era_splitting_criterion) #index of flattened tensor
+        gain, best_idx = torch.max(era_splitting_criterion)  # index of flattened tensor
         split_bins = self.num_bins - 1
         best_feature = best_idx // split_bins
         best_bin = best_idx % split_bins
 
-        return best_feature.item(), best_bin.item(), max_agreement
-
+        return best_feature.item(), best_bin.item(), max_agreement, gain
 
     def grow_tree(self, gradient_histogram, hessian_histogram, node_indices, depth):
         if depth == self.max_depth:
@@ -339,7 +342,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             return {"leaf_value": leaf_value.item(), "samples": node_indices.numel()}
 
         parent_size = node_indices.numel()
-        local_feature, best_bin, direction = self.find_best_split(
+        local_feature, best_bin, direction, gain = self.find_best_split(
             gradient_histogram, hessian_histogram
         )
 
@@ -347,7 +350,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             leaf_value = self.residual[node_indices].mean()
             self.gradients[node_indices] += self.learning_rate * leaf_value
             return {"leaf_value": leaf_value.item(), "samples": parent_size}
-        
+
         split_mask = self.bin_indices[node_indices, self.feat_indices_tree[local_feature]] <= best_bin
         left_indices = node_indices[split_mask]
         right_indices = node_indices[~split_mask]
@@ -356,11 +359,11 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         right_size = right_indices.numel()
 
         if left_size <= right_size:
-            grad_hist_left, hess_hist_left = self.compute_histograms( left_indices, self.feat_indices_tree )
+            grad_hist_left, hess_hist_left = self.compute_histograms(left_indices, self.feat_indices_tree)
             grad_hist_right = gradient_histogram - grad_hist_left
             hess_hist_right = hessian_histogram - hess_hist_left
         else:
-            grad_hist_right, hess_hist_right = self.compute_histograms( right_indices, self.feat_indices_tree )
+            grad_hist_right, hess_hist_right = self.compute_histograms(right_indices, self.feat_indices_tree)
             grad_hist_left = gradient_histogram - grad_hist_right
             hess_hist_left = hessian_histogram - hess_hist_right
 
@@ -378,10 +381,8 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             "left": left_child,
             "right": right_child,
             "d": direction,
+            "gain": gain
         }
-    
-
-
 
     def grow_forest(self):
         self.training_loss = []
@@ -390,9 +391,10 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         else:
             self.feat_indices_tree = self.feature_indices
             k = self.num_features
-            
-        self.per_era_gain = torch.zeros(self.num_eras, k, self.num_bins-1, device=self.device, dtype=torch.float32)
-        self.per_era_direction = torch.zeros(self.num_eras, k, self.num_bins-1, device=self.device, dtype=torch.float32)
+
+        self.per_era_gain = torch.zeros(self.num_eras, k, self.num_bins - 1, device=self.device, dtype=torch.float32)
+        self.per_era_direction = torch.zeros(self.num_eras, k, self.num_bins - 1, device=self.device,
+                                             dtype=torch.float32)
 
         iter = trange(self.n_estimators)
         for i in iter:
@@ -401,7 +403,8 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             if self.colsample_bytree < 1.0:
                 self.feat_indices_tree = torch.randperm(self.num_features, device=self.device, dtype=torch.int32)[:k]
 
-            self.root_gradient_histogram, self.root_hessian_histogram = self.compute_histograms( self.root_node_indices, self.feat_indices_tree )
+            self.root_gradient_histogram, self.root_hessian_histogram = self.compute_histograms(self.root_node_indices,
+                                                                                                self.feat_indices_tree)
 
             tree = self.grow_tree(
                 self.root_gradient_histogram,
@@ -412,7 +415,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             self.forest[i] = tree
             self.training_loss.append(((self.Y_gpu - self.gradients) ** 2).mean().item())
             stop = False
-            for es_callback in self.es_callbacks: # TODO: This is "any callback terminates". We could also implement "all callbacks terminate"
+            for es_callback in self.es_callbacks:  # TODO: This is "any callback terminates". We could also implement "all callbacks terminate"
                 if es_callback.evaluate_stopping(self):
                     stop = True
                     break
@@ -429,7 +432,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         )
         with torch.no_grad():
             for f in range(self.num_features):
-                X_f = torch.as_tensor( X_np[:, f], device=self.device, dtype=torch.float32 ).contiguous()
+                X_f = torch.as_tensor(X_np[:, f], device=self.device, dtype=torch.float32).contiguous()
                 bin_edges_f = self.bin_edges[f]
                 bin_indices_f = bin_indices[:, f].contiguous()
                 node_kernel.custom_cuda_binner(X_f, bin_edges_f, bin_indices_f)
@@ -453,7 +456,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         )
 
         return out
-    
+
     def bin_inference_data(self, X_np):
         is_integer_type = np.issubdtype(X_np.dtype, np.integer)
 
@@ -473,7 +476,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
                 X_np.shape, dtype=torch.int8, device="cuda"
             )
             for f in range(self.num_features):
-                bin_indices[:,f] = torch.as_tensor( X_np[:, f], device=self.device).contiguous()
+                bin_indices[:, f] = torch.as_tensor(X_np[:, f], device=self.device).contiguous()
         else:
             bin_indices = self.bin_data_with_existing_edges(X_np)
         return bin_indices
