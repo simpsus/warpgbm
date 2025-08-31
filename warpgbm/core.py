@@ -322,7 +322,6 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             era_splitting_criterion = self.per_era_gain.mean(dim=0)  # [F, B-1]
             dir_score_mask = (directional_agreement >= self.min_directional_agreement) & (
                         era_splitting_criterion > self.min_split_gain)
-            max_agreement = max_agreement.item()  # maximum is 1, so normalizing is pointless
 
         if not dir_score_mask.any():
             return -1, -1, 0, 0
@@ -334,7 +333,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
         best_feature = best_idx // split_bins
         best_bin = best_idx % split_bins
 
-        return best_feature.item(), best_bin.item(), max_agreement, gain
+        return best_feature.item(), best_bin.item(), max_agreement.item(), gain.item()
 
     def grow_tree(self, gradient_histogram, hessian_histogram, node_indices, depth):
         if depth == self.max_depth:
