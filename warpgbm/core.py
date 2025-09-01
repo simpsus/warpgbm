@@ -416,6 +416,11 @@ class WarpGBM(BaseEstimator, RegressorMixin):
                 self.root_node_indices,
                 0,
             )
+            # if there is no split at all in the tree, we have to terminate
+            if len(tree) == 2: # TODO: there should be a better way to detect this
+                logger.warning(f"Tree {i} has a leaf node {tree} at the root. Terminating training!")
+                break
+
             self.forest[i] = tree
             self.training_loss.append(((self.Y_gpu - self.gradients) ** 2).mean().item())
             stop = False
