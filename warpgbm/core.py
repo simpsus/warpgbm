@@ -421,6 +421,10 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             # if there is no split at all in the tree, we have to terminate
             if len(tree) == 2: # TODO: there should be a better way to detect this
                 logger.warning(f"Tree {i} has a leaf node {tree} at the root. Terminating training!")
+                if self.ensemble_size > 0:
+                    # there is an ensemble
+                    logger.debug(f"Pruning iterations to {i-1}")
+                    self.prune_iterations(i-1)
                 break
 
             self.forest[i] = tree
