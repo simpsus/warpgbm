@@ -27,7 +27,7 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             device="cuda",
             colsample_bytree=1.0,
             announce_pre_bins=False,
-            min_directional_agreement=0
+            min_directional_agreement=1
     ):
         # Validate arguments
         self._validate_hyperparams(
@@ -320,8 +320,12 @@ class WarpGBM(BaseEstimator, RegressorMixin):
             directional_agreement = self.per_era_direction.mean(dim=0).abs()  # [F, B-1]
             max_agreement = directional_agreement.max()
             era_splitting_criterion = self.per_era_gain.mean(dim=0)  # [F, B-1]
-            dir_score_mask = (directional_agreement >= self.min_directional_agreement) & (
-                        era_splitting_criterion > self.min_split_gain)
+            # we check agreement first to be able to revert
+            dir_mask_agreement = (directional_agreement >= self.min_directional_agreement)
+            if not dir_mask_agreement.any():
+                # we revert to using the maximum agreement
+                dir_mask_agreement = (directional_agreement == directional_agreement.max())
+            dir_score_mask = dir_mask_agreement & (era_splitting_criterion > self.min_split_gain)
 
         if not dir_score_mask.any():
             return -1, -1, 0, 0
